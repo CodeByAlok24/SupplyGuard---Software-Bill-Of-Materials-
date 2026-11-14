@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-inter);
+  --font-display: var(--font-jakarta);
+}
+
+@theme {
+  --color-brand: #7c2ff2;
+  --color-brand-dark: #6d21e8;
+  --color-brand-deep: #5d14d6;
+  --color-brand-soft: #efe7fe;
+  --color-brand-tint: #f7f3ff;
+  --color-ink: #191524;
+  --color-ink-strong: #171320;
+  --color-ink-soft: #2a2536;
+  --color-muted: #5f5a70;
+  --color-muted-light: #8a8496;
+  --color-line: #e9e4f2;
+  --color-line-soft: #f0ecf7;
+  --color-mint: #18a05c;
+  --color-surface: #ffffff;
+  --color-panel: #fbfaff;
+  --color-panel-deep: #f7f6fb;
+  --color-chip: #f2eff8;
+  --color-oksoft: #dcfce7;
+  --color-warnsoft: #fef3c7;
+  --color-badsoft: #fee2e2;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-bad: #b91c1c;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-brand-dark: #a78bfa;
+  --color-brand-deep: #c4b5fd;
+  --color-brand-soft: #241b3a;
+  --color-brand-tint: #1d1730;
+  --color-ink: #ece7f5;
+  --color-ink-strong: #f4f1fa;
+  --color-ink-soft: #cdc6de;
+  --color-muted: #a79fb8;
+  --color-muted-light: #857d9b;
+  --color-line: #2b2538;
+  --color-line-soft: #241f30;
+  --color-mint: #34d399;
+  --color-surface: #15111d;
+  --color-panel: #1c1826;
+  --color-panel-deep: #1a1626;
+  --color-chip: #232033;
+  --color-oksoft: #143324;
+  --color-warnsoft: #332810;
+  --color-badsoft: #331b1b;
+  --color-ok: #34d399;
+  --color-warn: #f0b429;
+  --color-bad: #f87171;
+  --color-red-50: #241316;
+  --color-red-100: #2e181c;
+  --color-red-200: #472a30;
+  --color-red-700: #f87171;
+  --color-red-800: #fca5a5;
+  --color-red-900: #fecaca;
+  --color-amber-50: #221a10;
+  --color-amber-100: #2c2412;
+  --color-amber-200: #463a1c;
+  --color-amber-800: #f0b429;
+  --color-amber-900: #fde68a;
+  --color-emerald-50: #12241c;
+  --color-emerald-100: #16301f;
+  --color-emerald-200: #1f4630;
+  --color-emerald-700: #34d399;
+  --color-emerald-800: #6ee7b7;
+  --color-emerald-900: #a7f3d0;
+  --color-sky-100: #16232c;
+  --color-orange-100: #2e1f10;
+  --color-orange-800: #fb923c;
+  --color-violet-50: #1f1836;
+  --color-violet-200: #352a5c;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-surface font-sans text-ink antialiased;
+    overflow-x: hidden;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: #e3d6fb;
+    color: #191524;
+  }
+
+  html[data-theme="dark"] ::selection {
+    background: #6d21e8;
+    color: #f4f1fa;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand/60 ring-offset-2 ring-offset-surface;
+  }
+
+  /* The full logo is a dark-on-transparent PNG; invert it for the dark theme. */
+  .logo-dark-flip {
+    transition: filter 150ms ease;
+  }
+  html[data-theme="dark"] .logo-dark-flip {
+    filter: brightness(0) invert(0.93);
+  }
+}

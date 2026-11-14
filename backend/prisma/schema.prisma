@@ -1,0 +1,279 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum LicenseDecision {
+  ALLOW
+  BLOCK
+  REVIEW
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String
+  passwordHash      String?
+  resetTokenHash    String?
+  resetTokenExpires DateTime?
+  createdAt         DateTime  @default(now())
+  memberships  WorkspaceMember[]
+  reviews      ReviewDecision[]
+  githubConnection GitHubConnection?
+  scans        ScanJob[]
+}
+
+model GitHubConnection {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  source      String   @default("oauth") // "oauth" | "pat"
+  login       String
+  name        String?
+  accessToken String
+  scope       String?
+  connectedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Workspace {
+  id        String            @id @default(cuid())
+  name      String
+  slug      String            @unique
+  createdAt DateTime          @default(now())
+  members   WorkspaceMember[]
+  projects  Project[]
+  policies  LicensePolicy[]
+  scans     ScanJob[]
+  reports   Report[]
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        WorkspaceRole @default(ANALYST)
+  createdAt   DateTime      @default(now())
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId, role])
+}
+
+model Project {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  name          String
+  repositoryUrl String?
+  defaultBranch String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  scans         ScanJob[]
+  sbomUploads   SbomUpload[]
+  comparisons   SbomComparison[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, updatedAt])
+}
+
+model ScanJob {
+  id          String     @id @default(cuid())
+  workspaceId String
+  projectId   String
+  status      ScanStatus @default(QUEUED)
+  source      String     @default("upload")
+  uploadName  String?
+  repositoryUrl String?
+  branch      String?
+  createdById String?
+  options     Json?
+  lockfile    Json?
+  errorCode   String?
+  errorMessage String?
+  componentCount Int     @default(0)
+  vulnerabilityCount Int @default(0)
+  licenseReviewCount Int @default(0)
+  vulnerabilityCheckStatus String @default("PENDING")
+  vulnerabilityCheckError String?
+  licenseCheckStatus String @default("PENDING")
+  licenseCheckError String?
+  sbom        Json?
+  startedAt   DateTime?
+  completedAt DateTime?
+  stage       String?
+  progress    Json?
+  createdAt   DateTime   @default(now())
+  createdBy   User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  components  Component[]
+  licenseFindings LicenseFinding[]
+  vulnerabilityFindings VulnerabilityFinding[]
+  reports     Report[]
+
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([status, createdAt])
+}
+
+model Component {
+  id              String    @id @default(cuid())
+  scanJobId       String
+  purl            String
+  name            String
+  version         String
+  packageType     String    @default("npm")
+  dependencyType   String    @default("TRANSITIVE")
+  licenseExpression String?
+  licenseSource   String?
+  licenseObservedAt DateTime?
+  scanJob         ScanJob   @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+  outgoing        DependencyEdge[] @relation("DependencyParent")
+  incoming        DependencyEdge[] @relation("DependencyChild")
+  licenseFindings LicenseFinding[]
+  vulnerabilities VulnerabilityFinding[]
+
+  @@unique([scanJobId, purl])
+  @@index([scanJobId, name])
+}
+
+model DependencyEdge {
+  id              String    @id @default(cuid())
+  scanJobId       String
+  parentComponentId String
+  childComponentId  String
+  parent           Component @relation("DependencyParent", fields: [parentComponentId], references: [id], onDelete: Cascade)
+  child            Component @relation("DependencyChild", fields: [childComponentId], references: [id], onDelete: Cascade)
+  createdAt        DateTime  @default(now())
+
+  @@unique([scanJobId, parentComponentId, childComponentId])
+  @@index([scanJobId])
+}
+
+model LicenseFinding {
+  id                String           @id @default(cuid())
+  scanJobId         String
+  componentId       String
+  observedExpression String?
+  observationSource String?
+  decision          LicenseDecision  @default(REVIEW)
+  policyRule        String?
+  reviewStatus      String           @default("OPEN")
+  scanJob           ScanJob          @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+  component         Component        @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  reviews           ReviewDecision[]
+
+  @@unique([scanJobId, componentId])
+  @@index([scanJobId, decision, reviewStatus])
+}
+
+model VulnerabilityFinding {
+  id            String   @id @default(cuid())
+  scanJobId     String
+  componentId   String
+  osvId         String
+  aliases       Json
+  summary       String?
+  severity      String?
+  cvssScore     Float?
+  modifiedAt    DateTime?
+  affected      Json?
+  scanJob       ScanJob  @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+  component     Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@unique([scanJobId, componentId, osvId])
+  @@index([scanJobId, severity])
+}
+
+model LicensePolicy {
+  id            String          @id @default(cuid())
+  workspaceId   String
+  licenseExpression String
+  decision      LicenseDecision
+  note          String?
+  updatedAt     DateTime        @updatedAt
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, licenseExpression])
+}
+
+model ReviewDecision {
+  id              String         @id @default(cuid())
+  licenseFindingId String
+  reviewerId       String
+  decision         LicenseDecision
+  note            String?
+  createdAt       DateTime       @default(now())
+  licenseFinding LicenseFinding @relation(fields: [licenseFindingId], references: [id], onDelete: Cascade)
+  reviewer       User           @relation(fields: [reviewerId], references: [id], onDelete: Restrict)
+
+  @@index([licenseFindingId, createdAt])
+}
+
+model Report {
+  id          String    @id @default(cuid())
+  workspaceId String
+  scanJobId   String
+  name        String
+  format      String
+  content     String    @db.Text
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  scanJob     ScanJob   @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+}
+
+model SbomUpload {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  projectId      String
+  fileName       String
+  format         String   @default("cyclonedx-json")
+  content        Json
+  componentCount Int      @default(0)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  comparisons    SbomComparison[]
+
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
+}
+
+model SbomComparison {
+  id                String      @id @default(cuid())
+  workspaceId       String
+  projectId         String
+  lockfileScanJobId String?
+  sbomUploadId      String?
+  coverageScore     Float
+  matchedComponents Int         @default(0)
+  report            Json
+  createdAt         DateTime    @default(now())
+  project           Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sbomUpload        SbomUpload? @relation(fields: [sbomUploadId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
+}

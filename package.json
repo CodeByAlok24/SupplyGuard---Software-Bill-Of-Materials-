@@ -1,0 +1,24 @@
+{
+  "name": "supplyguard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SupplyGuard \u2014 SBOM generation, license review and supply-chain vulnerability scanning. Root scripts proxy to frontend/ and backend/.",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint",
+    "dev:api": "bash scripts/ensure-db.sh && npm --prefix backend run dev:api",
+    "start:api": "bash scripts/ensure-db.sh && npm --prefix backend run start:api",
+    "dev:worker": "bash scripts/ensure-db.sh && npm --prefix backend run dev:worker",
+    "start:worker": "bash scripts/ensure-db.sh && npm --prefix backend run start:worker",
+    "db:generate": "npm --prefix backend run db:generate",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "db:deploy": "npm --prefix backend run db:deploy",
+    "typecheck:api": "npm --prefix backend run typecheck",
+    "db:start": "bash scripts/ensure-db.sh",
+    "db:stop": "pg_ctl -D \"$HOME/.local/share/supplyguard/pgdata\" stop",
+    "db:status": "pg_ctl -D \"$HOME/.local/share/supplyguard/pgdata\" status",
+    "db:psql": "psql \"postgresql://postgres@localhost:5432/supplyguard\""
+  }
+}

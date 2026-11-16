@@ -27,20 +27,23 @@ function Field({ label, htmlFor, required, hint, children }: { label: string; ht
 function BudgetBar({ slo }: { slo: Slo }) {
   const budget = slo.errorBudget;
   if (budget.status === "not_calculable") {
-    return <p className="mt-2 rounded-md bg-panel px-2 py-1.5 text-[10.5px] text-muted">Error budget not calculable — observed value, window, or timestamp missing or invalid.</p>;
+    return <p className="rounded-lg bg-panel px-3 py-2 text-[10.5px] text-muted">Error budget not calculable — add an observed value, a window and the observation time.</p>;
   }
   const consumed = Math.min(100, budget.consumedPercent ?? 0);
   const tone = budget.status === "exhausted" ? "bg-red-500" : "bg-emerald-500";
   return (
-    <div className="mt-2">
-      <div className="flex items-center justify-between text-[10px] font-semibold text-muted">
-        <span>Budget consumed (manual inputs)</span>
-        <span>{budget.consumedPercent}%</span>
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[9.5px] font-bold uppercase tracking-wide text-muted-light">Budget consumed</span>
+        <span className="text-[12px] font-bold text-ink">{budget.consumedPercent}%</span>
       </div>
-      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-deep" role="img" aria-label={`Error budget ${budget.consumedPercent}% consumed, ${budget.remainingPercent}% remaining`}>
+      <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-panel-deep" role="img" aria-label={`Error budget ${budget.consumedPercent}% consumed, ${budget.remainingPercent}% remaining`}>
         <div className={`h-full rounded-full ${tone}`} style={{ width: `${consumed}%` }} />
       </div>
-      <p className="mt-1 text-[9.5px] text-muted-light">Allowed bad events: {budget.budgetPercent}% · remaining {budget.remainingPercent}% · formula: {budget.formula}</p>
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[9.5px] text-muted-light">
+        <span>Allowed {budget.budgetPercent}%</span>
+        <span>{budget.remainingPercent}% remaining</span>
+      </div>
     </div>
   );
 }
@@ -142,31 +145,56 @@ export function ReliabilityPage() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-        <div>
+        <div className="min-w-0">
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[12px] font-semibold text-muted-light"><span>Workspace</span><span>/</span><span className="text-ink">Reliability context</span></nav>
           <h1 className="mt-2 text-[28px] font-bold tracking-tight text-ink">Reliability context</h1>
-          <p className="mt-1 max-w-2xl text-[13px] text-muted">Manual SLO registrations for your services — shown alongside security findings, never as part of their severity or the release verdict. <strong>Every value is user-entered (“Manual”); SupplyGuard does not query any telemetry system.</strong></p>
+          <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-muted">Manual SLO records shown beside security findings — never part of their severity or the release verdict. <strong>Nothing here is measured automatically.</strong></p>
         </div>
         {canWrite && ready ? <button type="button" onClick={openCreate} className="w-fit shrink-0 rounded-lg bg-brand-dark px-4 py-2 text-[13px] font-semibold text-white hover:bg-brand-deep">Add SLO</button> : null}
       </header>
 
-      {notice ? <p role="status" className="rounded-lg bg-emerald-50 px-4 py-2.5 text-[12px] text-emerald-800">{notice}</p> : null}
-      {error && !dialogOpen ? <div className="rounded-lg bg-red-50 px-4 py-3"><p role="alert" className="text-[12.5px] text-red-800">{error}</p><button type="button" onClick={() => selectedProjectId ? loadSlos(selectedProjectId) : undefined} className="mt-2 text-xs font-semibold text-red-800 underline">Retry</button></div> : null}
-
-      <div className="flex items-start gap-2 rounded-lg border border-line-soft bg-panel px-3 py-2.5 text-[11px] text-muted"><InfoIcon className="mt-0.5 h-4 w-4 shrink-0 text-brand" /><span><strong>Telemetry not connected.</strong> No OpenTelemetry, Prometheus or CloudWatch provider is configured or queried. Error budgets are computed from your entered values only: <code className="rounded bg-surface px-1">budget = 100 − target</code>, <code className="rounded bg-surface px-1">consumed = (100 − observed) / budget × 100</code>. Missing or invalid observations show “Not calculable” — never a fabricated number. Nothing here changes vulnerability severity or the release verdict.</span></div>
-
-      {projects.length > 1 ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <label htmlFor="slo-project" className="text-[12px] font-semibold text-muted">Project</label>
-          <select id="slo-project" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px]">{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
+      {notice ? (
+        <div role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-medium text-emerald-800">
+          <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+          <span className="flex-1">{notice}</span>
+          <button type="button" onClick={() => setNotice("")} aria-label="Dismiss notification" className="shrink-0 rounded p-0.5 text-emerald-700 hover:text-emerald-900"><XIcon className="h-3.5 w-3.5" /></button>
+        </div>
+      ) : null}
+      {error && !dialogOpen ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+          <p role="alert" className="flex-1 text-[12px] text-red-800">{error}</p>
+          <button type="button" onClick={() => selectedProjectId ? loadSlos(selectedProjectId) : undefined} className="text-[11px] font-semibold text-red-800 underline">Retry</button>
         </div>
       ) : null}
 
       {!canWrite && ready ? (
-        <p className="flex items-start gap-2 rounded-lg bg-panel-deep px-3 py-2.5 text-[11.5px] text-muted"><ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-brand" />Your role is <strong>{role.toLowerCase()}</strong> — read-only. Ask a workspace owner or administrator to add or edit SLOs.</p>
+        <p className="flex items-start gap-2 rounded-lg bg-panel-deep px-3 py-2 text-[11.5px] text-muted"><ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-brand" />Your role is <strong>{role.toLowerCase()}</strong> — read-only. Ask a workspace owner or administrator to add or edit SLOs.</p>
       ) : null}
+
+      <div className="rounded-xl border border-line bg-surface">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <label htmlFor="slo-project" className="text-[10px] font-bold uppercase tracking-wide text-muted-light">Project</label>
+            {projects.length > 1 ? (
+              <select id="slo-project" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] font-medium text-ink">{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
+            ) : (
+              <span className="text-[12.5px] font-semibold text-ink">{projects[0]?.name ?? "No project"}</span>
+            )}
+            {items ? <span className="rounded-full bg-chip px-2 py-0.5 text-[10px] font-semibold text-muted">{items.length} SLO{items.length === 1 ? "" : "s"}</span> : null}
+          </div>
+          <span className="hidden text-[10px] text-muted-light sm:inline">Source: manual entry — no telemetry queried</span>
+        </div>
+        <details className="border-t border-line-soft px-4 py-2.5 text-[11px] text-muted">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 font-semibold text-muted hover:text-ink [&::-webkit-details-marker]:hidden"><InfoIcon className="h-3.5 w-3.5 shrink-0 text-brand" />How error budgets are computed</summary>
+          <div className="mt-2 space-y-1.5 leading-relaxed">
+            <p>No OpenTelemetry, Prometheus or CloudWatch provider is configured or queried. Every number below comes from your entry.</p>
+            <p className="rounded bg-panel px-2 py-1 font-mono text-[10.5px] text-ink">budget = 100 − target · consumed = (100 − observed) / budget × 100</p>
+            <p>Missing or invalid observations show “Not calculable” — never a fabricated number. Nothing here changes vulnerability severity or the release verdict.</p>
+          </div>
+        </details>
+      </div>
 
       {!ready || loadedProjectId !== selectedProjectId || items === null ? (
         <div role="status" className="rounded-xl border border-line bg-surface p-8 text-center text-sm text-muted">{!ready ? "Checking your workspace…" : "Loading SLOs…"}</div>
@@ -185,34 +213,56 @@ export function ReliabilityPage() {
           {canWrite ? <button type="button" onClick={openCreate} className="mt-4 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white">Add the first SLO</button> : null}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 xl:grid-cols-2">
           {items.map((slo) => (
-            <section key={slo.id} className="rounded-xl border border-line bg-surface p-5 shadow-xs">
-              <div className="flex items-start justify-between gap-3">
+            <section key={slo.id} className="flex flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-xs">
+              <div className="flex items-start justify-between gap-3 px-5 pb-3 pt-4">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-[15px] font-bold text-ink">{slo.name}</h2>
-                    <span className="rounded-full bg-chip px-2 py-0.5 text-[9px] font-bold uppercase text-muted">Manual</span>
+                    <h2 className="truncate text-[15px] font-bold text-ink">{slo.name}</h2>
+                    <span className="rounded-full bg-chip px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-muted">Manual</span>
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${errorBudgetTone(slo.errorBudget.status)}`}>{errorBudgetLabel(slo.errorBudget.status)}</span>
                   </div>
-                  <p className="mt-1 font-mono text-[11px] text-muted">{slo.service} · {slo.environment}</p>
+                  <p className="mt-1 truncate text-[11px] text-muted">
+                    <span className="font-semibold text-ink">{slo.service}</span>
+                    <span className="mx-1 text-muted-light">·</span>{slo.environment}
+                    <span className="mx-1 text-muted-light">·</span><span className="font-mono">{slo.indicatorName}</span>
+                  </p>
                 </div>
                 {canWrite ? (
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button type="button" onClick={() => openEdit(slo)} className="rounded-md border border-line px-2.5 py-1.5 text-[11px] font-semibold text-ink hover:bg-panel">Edit</button>
-                    {canDelete ? <button type="button" onClick={() => remove(slo)} className="rounded-md border border-line px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50">Delete</button> : null}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button type="button" onClick={() => openEdit(slo)} className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted hover:bg-panel hover:text-ink">Edit</button>
+                    {canDelete ? <button type="button" onClick={() => remove(slo)} className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted hover:bg-red-50 hover:text-red-700">Delete</button> : null}
                   </div>
                 ) : null}
               </div>
-              <dl className="mt-4 grid grid-cols-2 gap-3 text-[11.5px] text-muted">
-                <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-light">Target</dt><dd className="mt-0.5 text-sm font-bold text-ink">{slo.target}%</dd></div>
-                <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-light">Indicator</dt><dd className="mt-0.5 font-mono text-[11px] break-all">{slo.indicatorName}</dd></div>
-                <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-light">Observed</dt><dd className="mt-0.5">{slo.observedValue !== null ? `${slo.observedValue}%` : "Not provided"}{slo.windowDays !== null ? ` · ${slo.windowDays}d window` : ""}</dd></div>
-                <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-light">Observation</dt><dd className="mt-0.5">{slo.observedAt ? new Date(slo.observedAt).toLocaleString() : "Not provided"}</dd></div>
+
+              <dl className="divide-y divide-line-soft border-y border-line-soft bg-panel/60 sm:grid sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                <div className="flex items-baseline justify-between gap-3 px-4 py-2 sm:block sm:py-2.5">
+                  <dt className="text-[9.5px] font-bold uppercase tracking-wide text-muted-light">Target</dt>
+                  <dd className="text-[13px] font-bold text-ink sm:mt-0.5">{slo.target}%</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 px-4 py-2 sm:block sm:py-2.5">
+                  <dt className="text-[9.5px] font-bold uppercase tracking-wide text-muted-light">Observed{slo.windowDays !== null ? ` · ${slo.windowDays}d` : ""}</dt>
+                  <dd className={`text-[13px] font-bold sm:mt-0.5 ${slo.observedValue === null ? "text-muted-light" : "text-ink"}`}>{slo.observedValue !== null ? `${slo.observedValue}%` : "Not provided"}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 px-4 py-2 sm:block sm:py-2.5">
+                  <dt className="text-[9.5px] font-bold uppercase tracking-wide text-muted-light">Last observed</dt>
+                  <dd className={`text-[13px] font-bold sm:mt-0.5 ${slo.observedAt ? "text-ink" : "text-muted-light"}`}>{slo.observedAt ? new Date(slo.observedAt).toLocaleDateString() : "Not provided"}</dd>
+                </div>
               </dl>
-              <BudgetBar slo={slo} />
-              {slo.note ? <p className="mt-3 whitespace-pre-wrap border-t border-line-soft pt-3 text-[11px] text-muted">{slo.note}</p> : null}
-              <p className="mt-2 text-[9px] text-muted-light">Created {new Date(slo.createdAt).toLocaleString()}{slo.createdBy ? ` by ${slo.createdBy.name}` : ""} · source: manual</p>
+
+              <div className="flex-1 px-5 py-3.5">
+                <BudgetBar slo={slo} />
+                {slo.note ? <p className="mt-3 whitespace-pre-wrap border-t border-line-soft pt-2.5 text-[11px] leading-relaxed text-muted">{slo.note}</p> : null}
+              </div>
+
+              <p className="flex flex-wrap items-center gap-x-1.5 border-t border-line-soft px-5 py-2 text-[9.5px] text-muted-light">
+                <span>Added {new Date(slo.createdAt).toLocaleDateString()}</span>
+                {slo.createdBy ? <><span aria-hidden>·</span><span>{slo.createdBy.name}</span></> : null}
+                <span aria-hidden>·</span>
+                <span>values entered by hand</span>
+              </p>
             </section>
           ))}
         </div>

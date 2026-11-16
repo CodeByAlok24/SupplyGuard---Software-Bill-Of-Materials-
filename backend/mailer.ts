@@ -29,7 +29,7 @@ if (smtpConfigured) {
 type MailInput = { to: string; subject: string; text: string; html?: string };
 
 export async function sendMail({ to, subject, text, html }: MailInput) {
-  if (!transport) throw new Error("SMTP is not configured. Set SMTP_USER and SMTP_PASS in server/.env.");
+  if (!transport) throw new Error("SMTP is not configured. Set SMTP_USER and SMTP_PASS in backend/.env.");
   const info = await transport.sendMail({ from, to, subject, text, html });
   return { messageId: info.messageId };
 }

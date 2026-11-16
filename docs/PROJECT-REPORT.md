@@ -67,9 +67,9 @@ Relevant, well-established work SupplyGuard builds on:
         │           │
         ▼           ▼
 ┌──────────────────┐  ┌───────────────────┐
-│  PostgreSQL 16   │  │  pg-boss worker   │
+│  PostgreSQL 18   │  │  pg-boss worker   │
 │  (Prisma ORM)    │  │  scan jobs       │
-│  13 models       │  │  fetch → analyze  │
+│  18 models       │  │  fetch → analyze  │
 │                  │  │  → licenses →     │
 │                  │  │  OSV → finalizing │
 └──────────────────┘  └───────┬───────────┘
@@ -88,7 +88,7 @@ Relevant, well-established work SupplyGuard builds on:
 |---|---|---|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript 5, Tailwind CSS 4 | Server components + per-request data, fast dev iteration |
 | Backend | Node.js, Express 5, TypeScript | Minimal, explicit REST; no framework magic |
-| Database | PostgreSQL 16 + Prisma ORM | Typed queries, migrations, pg-boss for jobs |
+| Database | PostgreSQL 18 + Prisma ORM | Typed queries, migrations, pg-boss for jobs |
 | Auth | bcrypt + JWT in HttpOnly cookie | Stateless sessions, no client secrets |
 | SBOM | CycloneDX 1.6 (JSON) | OWASP standard, vendor-neutral |
 | Vulnerability data | OSV API (`/v1/querybatch`, `/v1/vulns/:id`) | Free, structured, always current |
@@ -118,7 +118,8 @@ Relevant, well-established work SupplyGuard builds on:
 5. **License Compliance** — per-package observed license (with source), workspace policy verdicts, reviewer notes, policy configuration UI.
 6. **Vulnerability Analysis** — filterable by severity, project, search by advisory ID; links to authoritative OSV pages.
 7. **Release Review** — ship verdict (READY / REVIEW / BLOCKED) computed from fixed, visible rules; **fix plan** with current → target version and a copyable `npm install` command; **change review** diff vs the previous scan (new/resolved advisories, added/removed/upgraded packages, license changes); dependency paths for each vulnerable package.
-8. **Reports** — CycloneDX JSON SBOM, license-findings CSV, vulnerability-findings CSV; stored, searchable, downloadable.
+8. **Reports** — CycloneDX JSON SBOM; license-findings CSV; vulnerability-findings CSV; **release evidence report** (JSON and findings × deployments CSV) with SBOM digest, evidence + provenance (always `unverified`), SLOs (manual), fixed rules, and limitations; CSV cells are formula-injection escaped; stored, searchable, downloadable.
+8a. **Release evidence (manual)** — workspace-scoped CRUD for digest → service/environment mappings; **finding impact** view attributing findings to deployments only on bit-exact SBOM-digest match; **SLSA attestation parsing** (SLSA v1/v0.2, DSSE) with subject↔artifact digest comparison — signatures never verified; **reliability context (manual SLOs)** with read-time error budgets beside findings. Nothing is ingested or measured live; every value is labeled Manual.
 9. **Settings** — workspace rename, license policy, GitHub connection (OAuth or PAT), integration status display.
 10. **Theming & responsive layout** — full light/dark mode via CSS custom properties; zero horizontal overflow on 375 px and 768 px viewports; mobile drawer navigation; keyboard-accessible toggles.
 
@@ -152,7 +153,7 @@ Relevant, well-established work SupplyGuard builds on:
 
 - **Typechecking** — `tsc --noEmit` clean (server and app).
 - **Lint** — `eslint` clean.
-- **Build** — `next build` succeeds; all 27 routes prerender or stream.
+- **Build** — `next build` succeeds; 28+ pages prerender or stream (30 at last verified build).
 - **Real repository scan** — `github.com/CodeByAlok24/HAQMS` cloned and scanned by the background worker; produced 162 vulnerability findings across ~350 packages; results validated manually against OSV pages for 5 advisories.
 - **Failure-path tests** — wrong-password login (401), no-session access (401), cross-workspace access (404), bad lockfile (400/422), duplicate email registration (409), invalid license policy (400), unknown scan/report (404), OSV unreachable (PARTIAL status, honest notice).
 - **Coverage comparison** — perfect SBOM scores 100; deliberately sabotaged SBOM (missing component, missing edge, stripped license metadata) scores 75 with every gap detected and explained.
@@ -162,7 +163,7 @@ Relevant, well-established work SupplyGuard builds on:
 
 This system is a **self-hosted MVP**, not a certified production product.
 
-- **No cloud deployment.** AWS/ECS/RDS/S3/SQS are designed but not provisioned; the current data lives in a local PostgreSQL instance (`/tmp/opencode/pgdata` in this workspace) and is lost if wiped. A `docker-compose.yml` exists for a persistent Postgres volume; activating it requires `sudo usermod -aG docker $USER`.
+- **No cloud deployment.** AWS/ECS/RDS/S3/SQS are designed but not provisioned; the current data lives in a local PostgreSQL instance (a user-managed PostgreSQL 18 cluster at `~/.local/share/supplyguard/pgdata`); `/tmp` is not used; `backups/` holds pg_dump snapshots. A `docker-compose.yml` exists for a persistent Postgres volume; activating it requires `sudo usermod -aG docker $USER`.
 - **Email delivery** — Gmail SMTP rejects credentials; password reset links are logged server-side only until fixed.
 - **OAuth** — Google sign-in requires the user to be a test user on the consent screen; GitHub sign-in is configured but the end-to-end callback has not been executed by the owner (PAT connection verified).
 - **OSV completeness** — OSV covers only open vulnerabilities with structured advisories; unlisted advisories are invisible to any tool.
@@ -173,7 +174,7 @@ This system is a **self-hosted MVP**, not a certified production product.
 
 ## 12. Future Scope
 
-1. **Deployment-aware impact view** — register a deployed service (digest → service → SLO/error budget) and show which running services are affected by which advisories. Requires AWS credentials; documented in `docs/SUPPLYGUARD-PLAN.md`.
+1. **Deployment-aware impact view** — ~~requires AWS~~ **partially implemented (manual phase, Nov 2026)**: release evidence registers digest → service → environment → SLO/error budget by hand; the finding-impact view attributes findings to registered deployments only when the scan SBOM digest is bit-exact to the evidence. Still missing: automatic ingestion (AWS/ECR/ECS/CI), cryptographic verification of digests, and live telemetry — documented in `docs/SUPPLYGUARD-PLAN.md`.
 2. **Publishable evaluation** — mutation corpus of public npm projects; measure precision/recall/false-alarm rate of the SBOM-vs-lockfile completeness comparison; compare against `sbom-utility`. Target venue: an industry track (IEEE Software, or a student conference).
 3. **Persistence** — activate the pinned Docker Postgres volume so data survives restarts; move `backups/` off the dev machine.
 4. **Notifications** — email/Slack on scan completion and on new advisory affecting an already-scanned tree.

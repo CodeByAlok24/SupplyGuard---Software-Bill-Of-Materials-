@@ -9,7 +9,7 @@ paginate: true
 ### Every dependency. Every obligation. In view.
 
 **Alok Kumar Das**
-Software Bill of Materials · License Policy · Deployment-aware risk
+Software Bill of Materials · License Policy · Deployment-aware risk (manual evidence phase shipped)
 
 <br/>
 
@@ -44,7 +44,7 @@ package-lock.json ──► SupplyGuard ──► CycloneDX SBOM (1.6)
                        └─► Release Review: READY · REVIEW · BLOCKED  + fix plan
 ```
 
-**Live demo:** `github.com/CodeByAlok24/HAQMS` scanned in production conditions → 162 findings, 1 critical, fix one command away.
+**Live demo:** `github.com/CodeByAlok24/HAQMS` scanned on a developer machine → 162 findings, 1 critical, fix one command away.
 
 ---
 
@@ -78,7 +78,7 @@ package-lock.json ──► SupplyGuard ──► CycloneDX SBOM (1.6)
 | Frontend | Next.js 16 · React 19 · Tailwind 4 |
 | Backend | Express 5 · REST `/api/v1` |
 | Jobs | pg-boss worker (background scan) |
-| Data | PostgreSQL 16 · Prisma · 13 models |
+| Data | PostgreSQL 18 · Prisma · 18 models |
 | Auth | bcrypt + JWT HttpOnly cookie |
 | External | OSV API · npm registry · GitHub OAuth/PAT |
 
@@ -110,11 +110,11 @@ Self-hosted. No third-party SaaS holding your package list.
 
 ## What it honestly is — and what it is not
 
-**Is:** a self-hosted MVP, fully working, every flow verified end-to-end.
+**Is:** a self-hosted MVP, every flow exercised locally end-to-end (smoke-tested and unit/integration-tested); not independently audited.
 
 **Is not:** a certified production platform. No cloud deployment yet (documented, requires AWS credentials). SMTP unverified. OAuth round-trip pending. Research novelty claimed: **none** — integration of known techniques, exceptionally well-engineered.
 
-**Next:** deploy to AWS · deployment-aware SLO view · publishable evaluation of the SBOM-completeness comparison.
+**Next:** deploy to AWS · automatic deployment/telemetry ingestion (manual evidence + manual SLO display shipped Nov 2026 — no live telemetry) · publishable evaluation of the SBOM-completeness comparison.
 
 ---
 

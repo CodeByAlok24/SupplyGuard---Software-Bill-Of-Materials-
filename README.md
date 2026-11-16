@@ -122,7 +122,7 @@ npm run dev:api        # API       → http://localhost:4000/api/v1   (also star
 npm run dev:worker     # background scan worker
 ```
 
-**Demo login** (works on the seeded database): ask the project owner for the demo credentials. Change the account password after publishing this repository — never commit real passwords.
+**Demo login:** the restored development database contains a demo workspace with several projects and hundreds of stored findings. There is **no seed script** — reproduce it by registering, uploading a `package-lock.json`, and running a scan. Ask the project owner for demo credentials; never commit real passwords.
 
 Useful DB commands (cluster lives at `~/.local/share/supplyguard/pgdata`, outside `/tmp`):
 
@@ -141,17 +141,17 @@ npm run db:psql      # open a psql shell on the supplyguard database
 Cloud - SBOM/
 ├─ README.md                    ← you are here
 ├─ package.json                 ← root proxy scripts (dev / build / lint / db:*)
-├─ docker-compose.yml           ← optional: pinned postgres:16-alpine service
+├─ docker-compose.yml           ← optional: pinned postgres:18-alpine service (image bump untested on this machine; all dev runs used the local PostgreSQL 18 cluster)
 ├─ scripts/ensure-db.sh         ← idempotent PostgreSQL auto-starter
 ├─ backend/                     ← Express + Prisma + pg-boss worker
-│  ├─ api.ts                    ← REST API (/api/v1), ~50 routes
+│  ├─ api.ts                    ← REST API (/api/v1), 60 routes
 │  ├─ auth.ts                   ← JWT cookie sessions, bcrypt, role checks
 │  ├─ scanner.ts                ← lockfile parser · OSV · license · tree builder
 │  ├─ scan-review.ts            ← verdict gate + fix plan + scan diff
 │  ├─ sbom-compare.ts           ← SBOM-vs-lockfile coverage engine
 │  ├─ worker.ts                 ← pg-boss job consumer (background scans)
 │  ├─ mailer.ts                 ← Gmail SMTP (reset emails)
-│  ├─ prisma/schema.prisma      ← 16 models
+│  ├─ prisma/schema.prisma      ← 18 models
 │  └─ prisma/migrations/        ← applied migrations
 ├─ frontend/                    ← Next.js 16 (App Router) + Tailwind CSS 4
 │  ├─ src/app/                  ← routes (landing, auth, workspace, scans/[id])
@@ -203,8 +203,11 @@ see is real, not animated.
 - **SBOM coverage** — upload any CycloneDX SBOM, compare against the scanned lockfile: coverage score with a **visible formula** (`matched ÷ total × 100`), missing components / missing relationships / missing metadata, each with an explanation.
 - **Vulnerability Analysis** — full OSV match list with **severity distribution chart** and **Impact tree** tab (dependency graph with advisory badges, project-scoped).
 - **License Compliance** — observed license + source per package, policy decisions (ALLOW/BLOCK/REVIEW), reviewer notes, policy editor.
-- **SBOM reports** — generate & download CycloneDX JSON and CSV (licenses / vulnerabilities) on demand; stored per workspace.
+- **SBOM reports** — generate & download CycloneDX JSON, CSV (licenses / vulnerabilities), and the **release evidence report** (JSON or findings×deployments CSV): project/scan identity, SBOM format + content digest, evidence + provenance (all `unverified`), artifact/deploy mappings, findings with impact status, SLOs, rules used and limitations. CSV cells are formula-injection-safe (`= + - @` leading characters are quote-prefixed).
 - **Release Review** — ship verdict computed from **fixed, visible rules**: any critical/high advisory or blocked license ⇒ **BLOCKED**; missing metadata, partial OSV/license checks or moderate/unrated findings ⇒ **REVIEW**; otherwise **READY**. Includes the **fix plan** (current → target version + copyable command), the **change review** (diff vs previous scan), and **dependency paths** for every vulnerable package (“why is this here?”).
+- **Release evidence** — manually registered chain links (repo → build → SBOM → artifact → deployment), workspace-scoped CRUD at `/evidence`; digests validated and normalized; `Manual` labels everywhere; finding-impact view attributes findings to deployments only when the scan SBOM digest is bit-exact to registered evidence (`verified` / `linked` / `unverified` / `missing`); optional **SLSA/in-toto provenance attestation upload — safe parsing + subject/artifact digest comparison only, signatures never verified** (`/release-evidence/:id/attestation`).
+- **Reliability context** — manual SLO registrations per service+environment at `/reliability`; error budgets computed at read time from your entered values (`budget = 100 − target`); labeled **Manual**; never affects severity or the release verdict; no live OTel/Prometheus/CloudWatch integration (adapter boundary in `backend/telemetry.ts`, providers unimplemented).
+- **Monitoring (optional)** — the API exposes Prometheus-format metrics at `GET /metrics`; the dev machine runs Prometheus on `127.0.0.1:9090` and a provisioned Grafana dashboard on `127.0.0.1:3001` ("SupplyGuard — API & Worker", `deploy/monitoring/`; metrics are localhost-scrape by default, `METRICS_TOKEN` supported; no findings or user data in metrics). Not a security signal — app telemetry only.
 - **Workspace & projects** — multi-tenant data model (all queries workspace-scoped); project CRUD with the latest scan linked per project.
 - **Theming & responsive layout** — full light/dark mode (CSS custom properties, no flash-of-wrong-theme); zero horizontal overflow at 375 / 768 / 1440 px; mobile drawer navigation.
 
@@ -212,7 +215,7 @@ see is real, not animated.
 
 ## API surface
 
-Over 40 endpoints, all under `http://localhost:4000/api/v1`, all workspace-scoped.
+60 endpoints, all under `http://localhost:4000/api/v1`, all workspace-scoped.
 Full contract in **[docs/API.md](docs/API.md)** — highlights:
 
 | Method & path | Purpose |
@@ -272,7 +275,7 @@ Root-level (`npm run …`) proxies to `frontend/` and `backend/`:
 
 ## Data model at a glance
 
-`User` → `WorkspaceMember` → `Workspace` → `Project` → `ScanJob` → `Component` / `DependencyEdge` / `LicenseFinding` / `VulnerabilityFinding` → `Report` → `ReviewDecision` · plus `GitHubConnection`, `SbomUpload`, `SbomComparison`, `LicensePolicy`, `RoleScore`… see `backend/prisma/schema.prisma` for the full picture (16 models).
+`User` → `WorkspaceMember` → `Workspace` → `Project` → `ScanJob` → `Component` / `DependencyEdge` / `LicenseFinding` / `VulnerabilityFinding` → `Report` → `ReviewDecision` · plus `GitHubConnection`, `SbomUpload`, `SbomComparison`, `LicensePolicy`, `ReleaseEvidence`, `ServiceLevelObjective`, `ProvenanceAttestation` — see `backend/prisma/schema.prisma` for the full picture (18 models).
 
 Everything is scoped by `workspaceId`; every API lookup enforces it server-side.
 
@@ -298,6 +301,8 @@ Everything is scoped by `workspaceId`; every API lookup enforces it server-side.
 | [docs/PRESENTATION.md](docs/PRESENTATION.md) | 12-slide project pitch (Marp) |
 | [docs/API.md](docs/API.md) | Every endpoint with semantics & errors |
 | [docs/SUPPLYGUARD-PLAN.md](docs/SUPPLYGUARD-PLAN.md) | Architecture, phases, AWS roadmap |
+| [deploy/monitoring/](deploy/monitoring/) | Prometheus config, Grafana dashboard, install guide |
+| [docs/RESEARCH-EVALUATION.md](docs/RESEARCH-EVALUATION.md) | Proposed (not executed) study: findings+SBOM vs findings+artifact/deployment evidence + SLO context |
 | [docs/screenshots/](docs/screenshots) | Real captures of the running app |
 
 ---

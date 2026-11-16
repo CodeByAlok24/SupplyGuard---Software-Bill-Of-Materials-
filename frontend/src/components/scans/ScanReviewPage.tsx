@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { api, type GateCheck, type ScanReview } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { api, type GateCheck, type ImpactEntry, type ScanReview } from "@/lib/api";
+import { ImpactChip, dependencyPathText, deploymentText, shortDigest, SloContextList } from "@/components/impact/ImpactBits";
 import {
   AlertTriangleIcon,
   ArrowRightIcon,
@@ -77,6 +78,10 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
+  const [impactType, setImpactType] = useState<"all" | "vulnerability" | "license">("all");
+  const [impactStatus, setImpactStatus] = useState("all");
+  const [impactService, setImpactService] = useState("all");
+  const [impactEnvironment, setImpactEnvironment] = useState("all");
 
   async function load() {
     setLoading(true);
@@ -121,6 +126,51 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       setCopied(null);
     }
   }
+
+  // Deployment impact: per-finding evidence status. Deterministic — severity untouched.
+  const impactEntries = review?.evidence.impact ?? [];
+  const impactCounts = useMemo(() => {
+    const counts = { verified: 0, linked: 0, unverified: 0, missing: 0, stale: 0 };
+    for (const entry of impactEntries) {
+      counts[entry.status] += 1;
+      if (entry.stale) counts.stale += 1;
+    }
+    return counts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review?.evidence.impact]);
+
+  const impactOptions = useMemo(() => {
+    const services = new Set<string>();
+    const environments = new Set<string>();
+    for (const entry of impactEntries) {
+      for (const service of entry.services) {
+        if (service.service) services.add(service.service);
+        if (service.environment) environments.add(service.environment);
+      }
+    }
+    return { services: [...services].sort(), environments: [...environments].sort() };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review?.evidence.impact]);
+
+  const filteredImpact = useMemo(() => impactEntries.filter((entry) => {
+    if (impactType !== "all" && entry.findingType !== impactType) return false;
+    if (impactStatus !== "all" && entry.status !== impactStatus) return false;
+    if (impactService !== "all" && !entry.services.some((service) => service.service === impactService)) return false;
+    if (impactEnvironment !== "all" && !entry.services.some((service) => service.environment === impactEnvironment)) return false;
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [review?.evidence.impact, impactType, impactStatus, impactService, impactEnvironment]);
+
+  const findingLabel = useMemo(() => {
+    const labels = new Map<string, { title: string; detail: string; page: string }>();
+    for (const vuln of review?.findings.vulnerabilities ?? []) {
+      labels.set(vuln.id, { title: vuln.osvId, detail: `${vuln.component.name}@${vuln.component.version}`, page: "/vulnerabilities" });
+    }
+    for (const finding of review?.findings.licenses ?? []) {
+      labels.set(finding.id, { title: finding.component.name, detail: finding.observedExpression || finding.decision, page: "/licenses" });
+    }
+    return labels;
+  }, [review?.findings]);
 
   if (loading) {
     return <div role="status" className="rounded-xl border border-line bg-surface p-10 text-center text-sm text-muted">Loading scan review…</div>;
@@ -376,13 +426,14 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[420px] text-left text-[11.5px]">
-                    <thead className="bg-panel text-muted"><tr><th className="px-4 py-2.5 font-semibold">Advisory</th><th className="px-4 py-2.5 font-semibold">Package</th><th className="px-4 py-2.5 font-semibold">Severity</th></tr></thead>
+                    <thead className="bg-panel text-muted"><tr><th className="px-4 py-2.5 font-semibold">Advisory</th><th className="px-4 py-2.5 font-semibold">Package</th><th className="px-4 py-2.5 font-semibold">Severity</th><th className="px-4 py-2.5 font-semibold">Impact</th></tr></thead>
                     <tbody className="divide-y divide-line-soft">
                       {findings.vulnerabilities.slice(0, 30).map((finding) => (
                         <tr key={finding.id}>
                           <td className="px-4 py-2.5"><a href={`https://osv.dev/vulnerability/${encodeURIComponent(finding.osvId)}`} target="_blank" rel="noreferrer" className="font-semibold text-brand-dark underline">{finding.osvId}</a></td>
                           <td className="px-4 py-2.5"><span className="font-semibold text-ink">{finding.component.name}</span><span className="ml-1 text-muted">{finding.component.version}</span></td>
                           <td className="px-4 py-2.5">{severityPill(finding.severity)}</td>
+                          <td className="px-4 py-2.5"><ImpactChip impact={finding.impact} /></td>
                         </tr>
                       ))}
                     </tbody>
@@ -403,7 +454,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                         <p className="text-[12px] font-semibold text-ink">{finding.component.name}<span className="ml-1 font-normal text-muted">{finding.component.version}</span></p>
                         <p className="text-[10.5px] text-muted">{finding.observedExpression || "Unknown / needs review"} · {finding.observationSource || "no source"}</p>
                       </div>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${finding.decision === "BLOCK" ? "bg-red-100 text-red-800" : finding.decision === "ALLOW" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{finding.decision}</span>
+                      <span className="flex items-center gap-2"><ImpactChip impact={finding.impact} /><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${finding.decision === "BLOCK" ? "bg-red-100 text-red-800" : finding.decision === "ALLOW" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{finding.decision}</span></span>
                     </li>
                   ))}
                 </ul>
@@ -411,6 +462,73 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               {findings.licenses.length > 12 ? <p className="px-5 py-2 text-[10.5px] text-muted">Showing 12 of {findings.licenses.length}. Review the rest on the License Compliance page.</p> : null}
             </SectionCard>
           </div>
+
+          <SectionCard
+            title="Deployment impact"
+            subtitle="Where these findings can reach: only when a component is in this SBOM and the SBOM digest is bit-exact to a digest in manually registered release evidence linked to a deployment. Manual evidence is never verification."
+            action={<Link href="/evidence" className="text-xs font-semibold text-brand-dark">Release evidence</Link>}
+          >
+            {impactEntries.length === 0 ? (
+              <EmptyLine>Impact is computed for completed scans with findings. Register release evidence to link this SBOM to its artifact and deployments.</EmptyLine>
+            ) : (
+              <div className="p-5">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-800">{impactCounts.verified} verified</span>
+                  <span className="rounded-full bg-sky-50 px-2.5 py-1 text-sky-800">{impactCounts.linked} scan-linked</span>
+                  <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-800">{impactCounts.unverified} unverified</span>
+                  <span className="rounded-full bg-chip px-2.5 py-1 text-muted">{impactCounts.missing} missing</span>
+                  {impactCounts.stale ? <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-800">{impactCounts.stale} stale</span> : null}
+                  {review?.evidence.sbomDigest ? <span className="ml-auto font-mono text-[10.5px] font-normal text-muted">SBOM sha256:{shortDigest(review.evidence.sbomDigest.replace(/^sha256:/, ""))}</span> : null}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <select aria-label="Filter finding type" value={impactType} onChange={(event) => setImpactType(event.target.value as typeof impactType)} className="rounded-lg border border-line px-2.5 py-1.5 text-[11.5px]"><option value="all">All findings</option><option value="vulnerability">Advisories</option><option value="license">License decisions</option></select>
+                  <select aria-label="Filter impact state" value={impactStatus} onChange={(event) => setImpactStatus(event.target.value)} className="rounded-lg border border-line px-2.5 py-1.5 text-[11.5px]"><option value="all">All impact states</option><option value="verified">Verified</option><option value="linked">Scan-linked</option><option value="unverified">Unverified</option><option value="missing">Missing</option></select>
+                  <select aria-label="Filter service" value={impactService} onChange={(event) => setImpactService(event.target.value)} className="rounded-lg border border-line px-2.5 py-1.5 text-[11.5px]"><option value="all">All services</option>{impactOptions.services.map((service) => <option key={service} value={service}>{service}</option>)}</select>
+                  <select aria-label="Filter environment" value={impactEnvironment} onChange={(event) => setImpactEnvironment(event.target.value)} className="rounded-lg border border-line px-2.5 py-1.5 text-[11.5px]"><option value="all">All environments</option>{impactOptions.environments.map((environment) => <option key={environment} value={environment}>{environment}</option>)}</select>
+                  <span className="text-[11px] text-muted">{filteredImpact.length} of {impactEntries.length} shown</span>
+                </div>
+                <p className="mt-2 text-[10.5px] text-muted-light">Status meanings — Verified: SBOM digest bit-exact to registered evidence. Scan-linked: evidence explicitly linked to this scan. Unverified: project has evidence but no link to this SBOM. Missing: no evidence registered. Stale: evidence registered before this scan completed. Severity is never adjusted for deployment data.</p>
+
+                {filteredImpact.length === 0 ? (
+                  <p className="mt-3 rounded-lg bg-panel p-3 text-[11.5px] text-muted">No findings match these filters.</p>
+                ) : (
+                  <ul className="mt-3 divide-y divide-line-soft rounded-lg border border-line-soft">
+                    {filteredImpact.map((entry: ImpactEntry) => {
+                      const label = findingLabel.get(entry.findingId);
+                      return (
+                        <li key={`${entry.findingType}-${entry.findingId}`} className="px-4 py-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[12px] font-bold text-ink">{label?.title ?? entry.componentName}<span className="ml-2 font-normal text-muted">{label?.detail ?? `${entry.componentName}@${entry.componentVersion}`}</span><span className="ml-2 rounded-full bg-chip px-2 py-0.5 text-[9.5px] font-semibold uppercase text-muted">{entry.findingType}</span></p>
+                              <p className="mt-0.5 truncate font-mono text-[10px] text-muted-light" title={dependencyPathText(entry.dependencyPath)}>{dependencyPathText(entry.dependencyPath)}</p>
+                            </div>
+                            <ImpactChip impact={entry} />
+                          </div>
+                          {entry.services.length > 0 ? (
+                            <ul className="mt-2 space-y-1">
+                              {entry.services.map((service) => (
+                                <li key={service.evidenceId} className="rounded-md border border-line-soft bg-panel px-2.5 py-1.5 text-[10.5px] text-muted">
+                                  <span className="font-semibold text-ink">{deploymentText(service)}</span>
+                                  <span className="ml-2 font-mono">{service.artifactName ?? "artifact not provided"}</span>
+                                  <span className="ml-2 font-mono">{shortDigest(service.artifactDigest) ?? "digest not provided"}</span>
+                                  <span className="ml-2">· {service.source} evidence · {service.verificationState === "USER_ASSERTED" ? "user-asserted" : "unverified"}</span>
+                                  <SloContextList slos={service.slos} />
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1.5 text-[10.5px] text-muted">{entry.status === "missing" ? "No release evidence registered for this project." : "Evidence exists, but none references this SBOM or scan — the finding cannot be attributed to a deployment yet."} <Link href="/evidence" className="font-semibold text-brand-dark underline">Register links</Link></p>
+                          )}
+                          {entry.evidenceUpdatedAt ? <p className="mt-1 text-[9.5px] text-muted-light">Evidence updated {new Date(entry.evidenceUpdatedAt).toLocaleString()}{entry.stale ? " · registered before this scan completed (stale)" : ""}</p> : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+          </SectionCard>
 
           <section className="rounded-xl border border-line-soft bg-panel p-4">
             <p className="flex items-start gap-2 text-[11px] text-muted">

@@ -655,3 +655,12 @@ export function UploadIcon({ className = "h-4 w-4", ...props }: IconProps) {
     </svg>
   );
 }
+
+export function CopyIcon({ className = "h-4 w-4", ...props }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className} {...props}>
+      <rect x="6.5" y="6.5" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3.5" y="3.5" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}

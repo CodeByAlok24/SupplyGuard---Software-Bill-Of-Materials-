@@ -38,6 +38,7 @@ export type LicenseFinding = {
   component: { id: string; name: string; version: string; purl: string; licenseExpression: string | null; licenseSource: string | null };
   scanJob: { id: string; project: { id: string; name: string } };
   reviews: Array<{ decision: LicenseDecision; note: string | null; createdAt: string }>;
+  impact: ImpactEntry | null;
 };
 export type VulnerabilityFinding = {
   id: string;
@@ -50,6 +51,7 @@ export type VulnerabilityFinding = {
   affected: unknown;
   component: { id: string; name: string; version: string; purl: string };
   scanJob: { id: string; vulnerabilityCheckStatus: string; vulnerabilityCheckError: string | null; project: { id: string; name: string } };
+  impact: ImpactEntry | null;
 };
 export type ComponentRecord = {
   id: string;
@@ -89,9 +91,131 @@ export type DependencyRelationship = {
   parent: { purl: string; name: string; version: string };
   child: { purl: string; name: string; version: string };
 };
+
+export type ReleaseEvidence = {
+  id: string;
+  projectId: string;
+  repositoryUrl: string | null;
+  scanJobId: string | null;
+  commitSha: string | null;
+  sbomName: string | null;
+  sbomFormat: string | null;
+  sbomSerialNumber: string | null;
+  sbomGeneratedAt: string | null;
+  sbomDigest: string | null;
+  artifactName: string | null;
+  artifactDigest: string | null;
+  buildProvider: string | null;
+  buildWorkflow: string | null;
+  buildRunId: string | null;
+  buildRunUrl: string | null;
+  deployService: string | null;
+  deployEnvironment: string | null;
+  deployRegion: string | null;
+  deployAt: string | null;
+  evidenceSource: "manual";
+  verificationState: "unverified" | "user_asserted";
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: { id: string; name: string; email: string } | null;
+  scan: { id: string; status: string; stage: string | null; createdAt: string; repositoryUrl: string | null; branch: string | null; source: string } | null;
+  attestation: ProvenanceAttestation | null;
+};
+export type ReleaseEvidenceInput = {
+  scanJobId?: string | null;
+  repositoryUrl?: string | null;
+  commitSha?: string | null;
+  sbomName?: string | null;
+  sbomFormat?: string | null;
+  sbomSerialNumber?: string | null;
+  sbomGeneratedAt?: string | null;
+  sbomDigest?: string | null;
+  artifactName?: string | null;
+  artifactDigest?: string | null;
+  buildProvider?: string | null;
+  buildWorkflow?: string | null;
+  buildRunId?: string | null;
+  buildRunUrl?: string | null;
+  deployService?: string | null;
+  deployEnvironment?: string | null;
+  deployRegion?: string | null;
+  deployAt?: string | null;
+  verificationState?: "UNVERIFIED" | "USER_ASSERTED" | undefined;
+  note?: string | null;
+};
 export type GateCheck = { id: string; label: string; status: "pass" | "review" | "fail"; detail: string };
-export type ScanReviewVulnerability = { id: string; osvId: string; aliases: string[]; summary: string | null; severity: string | null; cvssScore: number | null; modifiedAt: string | null; component: { id: string; name: string; version: string; purl: string } };
-export type ScanReviewLicense = { id: string; observedExpression: string | null; observationSource: string | null; decision: LicenseDecision; policyRule: string | null; reviewStatus: string; component: { id: string; name: string; version: string; purl: string }; reviews: Array<{ decision: LicenseDecision; note: string | null; createdAt: string }> };
+export type SloErrorBudget = { budgetPercent: number; observedBadPercent: number | null; consumedPercent: number | null; remainingPercent: number | null; status: "within" | "exhausted" | "not_calculable"; formula: string };
+export type Slo = {
+  id: string;
+  projectId: string;
+  service: string;
+  environment: string;
+  name: string;
+  target: number;
+  indicatorName: string;
+  observedValue: number | null;
+  windowDays: number | null;
+  observedAt: string | null;
+  source: "manual";
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: { id: string; name: string; email: string } | null;
+  errorBudget: SloErrorBudget;
+};
+export type SloInput = {
+  service: string;
+  environment: string;
+  name: string;
+  target: number;
+  indicatorName: string;
+  observedValue?: number | null;
+  windowDays?: number | null;
+  observedAt?: string | null;
+  note?: string | null;
+};
+export type ImpactSlo = {
+  id: string;
+  name: string;
+  target: number;
+  indicatorName: string;
+  observedValue: number | null;
+  windowDays: number | null;
+  observedAt: string | null;
+  source: "manual";
+  errorBudget: SloErrorBudget;
+};
+export type ProvenanceAttestation = {
+  id: string;
+  envelope: "dsse" | "statement";
+  predicateType: string;
+  statementType: string;
+  payloadDigest: string;
+  rawBytes: number;
+  fileName: string | null;
+  subjectName: string | null;
+  subjectDigest: string | null;
+  subjectCount: number;
+  subjects: Array<{ name: string; digest: Record<string, string> }> | null;
+  subjectMatchesArtifact: boolean | null;
+  builderId: string | null;
+  buildType: string | null;
+  buildInvocationId: string | null;
+  startedOn: string | null;
+  finishedOn: string | null;
+  sourceRepoUrl: string | null;
+  sourceRevision: string | null;
+  materials: Array<{ uri: string; digest: Record<string, string> }> | null;
+  signatureCount: number;
+  /** ALWAYS "unverified" — signature verification is not implemented in SupplyGuard. */
+  signatureState: string;
+  parsedAt: string;
+};
+export type ImpactService = { service: string | null; environment: string | null; region: string | null; artifactName: string | null; artifactDigest: string | null; source: "manual"; verificationState: string; evidenceId: string; slos: ImpactSlo[] };
+export type ImpactEntry = { findingId: string; findingType: "vulnerability" | "license"; componentName: string; componentVersion: string; componentPurl: string; dependencyPath: Array<{ name: string; version: string }>; status: "verified" | "linked" | "unverified" | "missing"; reason: string; evidenceUpdatedAt: string | null; stale: boolean; services: ImpactService[] };
+export type ScanReviewVulnerability = { id: string; osvId: string; aliases: string[]; summary: string | null; severity: string | null; cvssScore: number | null; modifiedAt: string | null; component: { id: string; name: string; version: string; purl: string }; impact: ImpactEntry | null };
+export type ScanReviewLicense = { id: string; observedExpression: string | null; observationSource: string | null; decision: LicenseDecision; policyRule: string | null; reviewStatus: string; component: { id: string; name: string; version: string; purl: string }; reviews: Array<{ decision: LicenseDecision; note: string | null; createdAt: string }>; impact: ImpactEntry | null };
 export type ScanDiffVulnerability = { osvId: string; component: string; version: string; severity: string | null; summary: string | null };
 export type ScanReview = {
   scan: {
@@ -108,6 +232,7 @@ export type ScanReview = {
     completedAt: string | null;
     counts: { components: number; vulnerabilities: number; licenseReview: number };
     integrations: { osv: { status: string; error: string | null }; licenses: { status: string; error: string | null } };
+    sbomDigest?: string | null;
   };
   gate: { verdict: "READY" | "REVIEW" | "BLOCKED"; checks: GateCheck[]; note: string };
   remediation: Array<{
@@ -130,6 +255,12 @@ export type ScanReview = {
   };
   severityCounts: { critical: number; high: number; moderate: number; low: number; unknown: number };
   findings: { vulnerabilities: ScanReviewVulnerability[]; licenses: ScanReviewLicense[] };
+  evidence: { sbomDigest: string | null; impact: ImpactEntry[] };
+};
+export type ScanImpact = {
+  scan: ScanReview["scan"] & { sbomDigest: string | null };
+  severityCounts: ScanReview["severityCounts"];
+  impact: ImpactEntry[];
 };
 export type ApiErrorBody = { error: { code: string; message: string; details?: unknown } };
 
@@ -215,6 +346,7 @@ export const api = {
   scans: {
     get: (id: string) => request<{ item: ScanJob }>(`/scans/${encodeURIComponent(id)}`),
     review: (id: string) => request<{ item: ScanReview }>(`/scans/${encodeURIComponent(id)}/review`),
+    impact: (id: string) => request<{ item: ScanImpact }>(`/scans/${encodeURIComponent(id)}/impact`),
     downloadSbom: (id: string) => download(`/scans/${encodeURIComponent(id)}/sbom`),
   },
   licenses: {
@@ -229,6 +361,26 @@ export const api = {
     integrations: () => request<{ gitProvider: { configured: boolean; provider: string; privateRepositories: boolean }; osv: { configured: boolean; endpoint: string } }>("/settings/integrations"),
   },
   vulnerabilities: { findings: () => request<{ items: VulnerabilityFinding[] }>("/vulnerabilities/findings") },
+  slo: {
+    list: (projectId: string) => request<{ items: Slo[] }>(`/projects/${encodeURIComponent(projectId)}/slos`),
+    create: (projectId: string, body: SloInput) => request<{ item: Slo }>(`/projects/${encodeURIComponent(projectId)}/slos`, json(body)),
+    get: (id: string) => request<{ item: Slo }>(`/slos/${encodeURIComponent(id)}`),
+    update: (id: string, body: Partial<SloInput>) => request<{ item: Slo }>(`/slos/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    remove: (id: string) => request<void>(`/slos/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  },
+  releaseEvidence: {
+    list: (projectId: string) => request<{ items: ReleaseEvidence[] }>(`/projects/${encodeURIComponent(projectId)}/release-evidence`),
+    create: (projectId: string, body: ReleaseEvidenceInput) => request<{ item: ReleaseEvidence }>(`/projects/${encodeURIComponent(projectId)}/release-evidence`, json(body)),
+    get: (id: string) => request<{ item: ReleaseEvidence }>(`/release-evidence/${encodeURIComponent(id)}`),
+    update: (id: string, body: Partial<ReleaseEvidenceInput>) => request<{ item: ReleaseEvidence }>(`/release-evidence/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    remove: (id: string) => request<void>(`/release-evidence/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    uploadAttestation: (id: string, file: File) => {
+      const body = new FormData();
+      body.append("file", file);
+      return request<{ item: ProvenanceAttestation }>(`/release-evidence/${encodeURIComponent(id)}/attestation`, { method: "POST", body });
+    },
+    removeAttestation: (id: string) => request<void>(`/release-evidence/${encodeURIComponent(id)}/attestation`, { method: "DELETE" }),
+  },
   comparisons: {
     create: (scanJobId: string, sbomUploadId: string) => request<{ item: SbomComparisonItem }>(`/scans/${encodeURIComponent(scanJobId)}/compare`, json({ sbomUploadId })),
     get: (id: string) => request<{ item: SbomComparisonItem }>(`/comparisons/${encodeURIComponent(id)}`),
@@ -236,7 +388,7 @@ export const api = {
   },
   reports: {
     list: () => request<{ items: Array<{ id: string; name: string; format: string; createdAt: string; scanJob: { id: string; project: { name: string } } }> }>("/reports"),
-    create: (scanJobId: string, format: "cyclonedx-json" | "licenses-csv" | "vulnerabilities-csv") => request<{ item: { id: string; name: string; format: string; createdAt: string } }>("/reports", json({ scanJobId, format })),
+    create: (scanJobId: string, format: "cyclonedx-json" | "licenses-csv" | "vulnerabilities-csv" | "release-evidence-json" | "release-evidence-csv") => request<{ item: { id: string; name: string; format: string; createdAt: string } }>("/reports", json({ scanJobId, format })),
     download: (id: string) => download(`/reports/${encodeURIComponent(id)}/download`),
   },
 };

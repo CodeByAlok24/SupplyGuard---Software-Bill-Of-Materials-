@@ -16,6 +16,8 @@ import {
   HomeIcon,
   LayersIcon,
   MenuIcon,
+  FileTextIcon,
+  TrendingUpIcon,
   ScaleIcon,
   ScanIcon,
   SettingsIcon,
@@ -38,6 +40,8 @@ const navItems: NavItem[] = [
   { label: "License Compliance", icon: ScaleIcon, href: "/licenses" },
   { label: "Vulnerabilities", icon: AlertTriangleIcon, href: "/vulnerabilities" },
   { label: "Reports", icon: BarChartIcon, href: "/reports" },
+  { label: "Release evidence", icon: FileTextIcon, href: "/evidence" },
+  { label: "Reliability", icon: TrendingUpIcon, href: "/reliability" },
   { label: "Settings", icon: SettingsIcon, href: "/settings" },
 ];
 
@@ -289,9 +293,9 @@ export function DashboardShell({ children }: { children: ReactNode }) {
             <p role="alert" className="text-sm text-amber-900">{sessionError}</p>
             {sessionError.startsWith("Could not connect to the SupplyGuard API") ? <details className="mt-2 text-xs text-amber-950">
               <summary className="w-fit cursor-pointer font-semibold">Start the local services</summary>
-              <p className="mt-2">In the project folder, install the API dependencies, configure <code>server/.env</code>, and start PostgreSQL:</p>
-              <pre className="mt-2 overflow-x-auto rounded-md bg-amber-100 p-2"><code>{"npm --prefix server install\ncp server/.env.example server/.env\ndocker compose up -d postgres\nnpm run db:generate\nnpm run db:migrate"}</code></pre>
-              <p className="mt-2">Set a 32-character <code>JWT_SECRET</code> in <code>server/.env</code>. Then run <code>npm run dev:api</code> in another terminal. The scan worker is needed for scans: <code>npm run dev:worker</code>.</p>
+              <p className="mt-2">In the project folder, install the API dependencies and configure <code>backend/.env</code> (PostgreSQL starts automatically via the user-managed cluster):</p>
+              <pre className="mt-2 overflow-x-auto rounded-md bg-amber-100 p-2"><code>{"npm --prefix backend install\ncp backend/.env.example backend/.env\nnpm run dev:api"}</code></pre>
+              <p className="mt-2">Set a 32-character <code>JWT_SECRET</code> in <code>backend/.env</code>. The scan worker is needed for scans: <code>npm run dev:worker</code>.</p>
               <p className="mt-2">If this page is open on another device or a remote preview, set <code>NEXT_PUBLIC_API_URL</code> to an API address that device can reach, then restart Next.js.</p>
             </details> : null}
             <button type="button" onClick={() => window.location.reload()} className="mt-2 block text-xs font-semibold text-brand-dark">Retry session check</button>

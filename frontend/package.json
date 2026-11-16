@@ -7,14 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "dev:api": "npm --prefix server run dev:api",
-    "start:api": "npm --prefix server run start:api",
-    "dev:worker": "npm --prefix server run dev:worker",
-    "start:worker": "npm --prefix server run start:worker",
-    "db:generate": "npm --prefix server run db:generate",
-    "db:migrate": "npm --prefix server run db:migrate",
-    "db:deploy": "npm --prefix server run db:deploy",
-    "typecheck:api": "npm --prefix server run typecheck"
+    "dev:api": "npm --prefix backend run dev:api",
+    "start:api": "npm --prefix backend run start:api",
+    "dev:worker": "npm --prefix backend run dev:worker",
+    "start:worker": "npm --prefix backend run start:worker",
+    "db:generate": "npm --prefix backend run db:generate",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "db:deploy": "npm --prefix backend run db:deploy",
+    "typecheck:api": "npm --prefix backend run typecheck"
   },
   "dependencies": {
     "next": "16.4.6",

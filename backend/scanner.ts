@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db.js";
+import { osvChecksTotal, licenseChecksTotal } from "./metrics.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -401,6 +402,8 @@ async function analyzeLockfile(job: ScanJobWithRelations, lockfile: Lockfile, op
     vulnerabilityCheckError = error instanceof Error ? error.message : "OSV lookup failed.";
   }
 
+  osvChecksTotal.inc({ status: vulnerabilityCheckStatus.toLowerCase() }, 1);
+  licenseChecksTotal.inc({ status: licenseCheckStatus.toLowerCase() }, 1);
   await setStage(job.id, "finalizing");
   await flushProgress(true);
   const rootName = `supplyguard-${job.project.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
@@ -448,6 +451,10 @@ async function analyzeLockfile(job: ScanJobWithRelations, lockfile: Lockfile, op
     prisma.vulnerabilityFinding.count({ where: { scanJobId: job.id } }),
     prisma.licenseFinding.count({ where: { scanJobId: job.id, decision: "REVIEW" } }),
   ]);
+  // The exported SBOM is `JSON.stringify(sbom, null, 2)`; storing its sha256 here keeps
+  // `sha256sum` of the download identical to this value, for any future integrity check.
+  // Store as sha256:<hex> so it can be compared bit-exactly with release evidence (which normalizes to the same form).
+  const sbomDigest = `sha256:${createHash("sha256").update(JSON.stringify(sbom, null, 2), "utf8").digest("hex")}`;
   await prisma.scanJob.update({ where: { id: job.id }, data: {
     status: "COMPLETED",
     stage: null,
@@ -456,6 +463,7 @@ async function analyzeLockfile(job: ScanJobWithRelations, lockfile: Lockfile, op
     vulnerabilityCount,
     licenseReviewCount,
     sbom,
+    sbomDigest,
     vulnerabilityCheckStatus,
     vulnerabilityCheckError,
     licenseCheckStatus,

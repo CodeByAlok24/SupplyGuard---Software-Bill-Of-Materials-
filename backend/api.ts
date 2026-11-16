@@ -13,6 +13,13 @@ import { requireRole, requireSession, issueSession, setSessionCookie } from "./a
 import { prisma } from "./db.js";
 import { sendMail, smtpConfigured } from "./mailer.js";
 import { buildDiff, buildGate, buildRemediations } from "./scan-review.js";
+import { buildImpact, type ImpactEntry } from "./release-impact.js";
+import { parseProvenance, sanitizeFileName, ProvenanceError, ATTESTATION_MAX_BYTES } from "./provenance.js";
+import { buildReleaseEvidenceReport, buildReleaseEvidenceCsv, releaseEvidenceReportName, csvCell } from "./release-report.js";
+import { metricsMiddleware, metricsHandler, reportsGeneratedTotal } from "./metrics.js";
+import { sloCreateSchema, sloUpdateSchema, validateSloMerged, computeErrorBudget } from "./slo.js";
+import { TELEMETRY_STATUS } from "./telemetry.js";
+import { releaseEvidenceCreateSchema, releaseEvidenceUpdateSchema } from "./release-evidence.js";
 import { parseSbom, compareSbomAgainstLockfile } from "./sbom-compare.js";
 
 const app = express();
@@ -20,6 +27,7 @@ const api = express.Router();
 const port = Number(process.env.API_PORT || 4000);
 const frontendOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024, files: 1 } });
+const attestationUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: ATTESTATION_MAX_BYTES, files: 1 } });
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL must be configured before starting the API.");
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error("JWT_SECRET must be configured with at least 32 characters.");
@@ -41,6 +49,10 @@ app.use((req, _res, next) => {
   void _res;
   next();
 });
+
+// SupplyGuard's own scrape endpoint (outside /api/v1), optionally token-guarded.
+app.get("/metrics", metricsHandler);
+app.use(metricsMiddleware);
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: "draft-8", legacyHeaders: false });
 const registerSchema = z.object({
@@ -207,7 +219,7 @@ api.post("/auth/forgot-password", authLimiter, async (req, res) => {
       }
     } else {
       console.warn(`[dev] SMTP is not configured, so no email was sent. Password reset link for ${user.email}: ${link}`);
-      console.warn("[dev] Set SMTP_USER and SMTP_PASS in server/.env (Gmail app password) to send real reset emails.");
+      console.warn("[dev] Set SMTP_USER and SMTP_PASS in backend/.env (Gmail app password) to send real reset emails.");
     }
   }
   res.status(200).json({ message: "If an account exists for that email, a reset link has been sent." });
@@ -555,9 +567,9 @@ api.get("/scans/:jobId", async (req, res) => {
   res.json({ item: { id: job.id, project: job.project, status: job.status.toLowerCase(), stage: job.stage, createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt, error: job.errorMessage ? { code: job.errorCode, message: job.errorMessage } : null, counts: { components: job.componentCount, vulnerabilities: job.vulnerabilityCount, licenseReview: job.licenseReviewCount }, integrations: { osv: { status: job.vulnerabilityCheckStatus.toLowerCase(), error: job.vulnerabilityCheckError }, licenses: { status: job.licenseCheckStatus.toLowerCase(), error: job.licenseCheckError } }, progress: job.progress ?? null } });
 });
 
-api.get("/scans/:jobId/review", async (req, res) => {
-  const job = await prisma.scanJob.findFirst({
-    where: { id: req.params.jobId, workspaceId: req.auth!.workspaceId },
+async function loadReviewScan(jobId: string, workspaceId: string) {
+  return prisma.scanJob.findFirst({
+    where: { id: jobId, workspaceId },
     include: {
       project: { select: { id: true, name: true } },
       components: true,
@@ -570,6 +582,84 @@ api.get("/scans/:jobId/review", async (req, res) => {
       },
     },
   });
+}
+
+function projectEvidence(workspaceId: string, projectId: string) {
+  return prisma.releaseEvidence.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" } });
+}
+
+function projectSlos(workspaceId: string, projectId: string) {
+  return prisma.serviceLevelObjective.findMany({ where: { workspaceId, projectId }, orderBy: [{ service: "asc" }, { name: "asc" }] });
+}
+
+function workspaceSlos(workspaceId: string) {
+  return prisma.serviceLevelObjective.findMany({ where: { workspaceId } });
+}
+
+type ReviewScan = NonNullable<Awaited<ReturnType<typeof loadReviewScan>>>;
+
+// Compute finding -> artifact/deployment impact for every completed scan in a
+// workspace. Used by the workspace-wide findings endpoints so each finding can
+// render its honest evidence status. Deterministic: severity is never read or
+// modified here.
+async function workspaceImpact(workspaceId: string) {
+  const scans = await prisma.scanJob.findMany({
+    where: { workspaceId, status: "COMPLETED" },
+    select: { id: true, completedAt: true, sbomDigest: true, projectId: true },
+  });
+  if (scans.length === 0) return new Map<string, ImpactEntry>();
+  const [evidence, slos] = await Promise.all([
+    prisma.releaseEvidence.findMany({ where: { workspaceId } }),
+    prisma.serviceLevelObjective.findMany({ where: { workspaceId } }),
+  ]);
+  const evidenceByProject = new Map<string, typeof evidence>();
+  for (const item of evidence) {
+    const list = evidenceByProject.get(item.projectId) ?? [];
+    list.push(item);
+    evidenceByProject.set(item.projectId, list);
+  }
+  const slosByProject = new Map<string, typeof slos>();
+  for (const item of slos) {
+    const list = slosByProject.get(item.projectId) ?? [];
+    list.push(item);
+    slosByProject.set(item.projectId, list);
+  }
+  const map = new Map<string, ImpactEntry>();
+  for (const scan of scans) {
+    const [components, edges, vulnerabilities, licenses] = await Promise.all([
+      prisma.component.findMany({ where: { scanJobId: scan.id }, select: { id: true, name: true, version: true, purl: true } }),
+      prisma.dependencyEdge.findMany({ where: { scanJobId: scan.id }, select: { parentComponentId: true, childComponentId: true } }),
+      prisma.vulnerabilityFinding.findMany({ where: { scanJobId: scan.id }, select: { id: true, componentId: true, severity: true, osvId: true } }),
+      prisma.licenseFinding.findMany({ where: { scanJobId: scan.id }, select: { id: true, componentId: true, decision: true, observedExpression: true } }),
+    ]);
+    const entries = buildImpact({
+      job: { id: scan.id, completedAt: scan.completedAt, sbomDigest: scan.sbomDigest ?? null },
+      components,
+      edges,
+      vulnerabilities,
+      licenses,
+      evidence: evidenceByProject.get(scan.projectId) ?? [],
+      slos: slosByProject.get(scan.projectId) ?? [],
+    });
+    for (const entry of entries) map.set(entry.findingId, entry);
+  }
+  return map;
+}
+
+async function computeScanImpact(job: ReviewScan, edges: Array<{ parentComponentId: string; childComponentId: string }>, workspaceId: string) {
+  return buildImpact({
+    job: { id: job.id, completedAt: job.completedAt, sbomDigest: job.sbomDigest ?? null },
+    components: job.components.map((c) => ({ id: c.id, name: c.name, version: c.version, purl: c.purl })),
+    edges,
+    vulnerabilities: job.vulnerabilityFindings.map((v) => ({ id: v.id, componentId: v.componentId, severity: v.severity, osvId: v.osvId })),
+    licenses: job.licenseFindings.map((v) => ({ id: v.id, componentId: v.componentId, decision: v.decision, observedExpression: v.observedExpression })),
+    evidence: await projectEvidence(workspaceId, job.projectId),
+    slos: await projectSlos(workspaceId, job.projectId),
+  });
+}
+
+api.get("/scans/:jobId/review", async (req, res) => {
+  const job = await loadReviewScan(req.params.jobId as string, req.auth!.workspaceId);
   if (!job) return publicError(res, 404, "scan_not_found", "Scan not found.");
 
   const edges = await prisma.dependencyEdge.findMany({ where: { scanJobId: job.id }, select: { parentComponentId: true, childComponentId: true } });
@@ -587,6 +677,9 @@ api.get("/scans/:jobId/review", async (req, res) => {
       licenseFindings: { include: { component: { select: { id: true, name: true, version: true, purl: true } } } },
     },
   }) : null;
+
+  const impact = await computeScanImpact(job, edges, req.auth!.workspaceId);
+  const impactById = new Map(impact.map((entry) => [entry.findingId, entry]));
 
   const diff = job.status === "COMPLETED" ? buildDiff(
     { vulns: job.vulnerabilityFindings, components: job.components, licenses: job.licenseFindings },
@@ -625,9 +718,50 @@ api.get("/scans/:jobId/review", async (req, res) => {
       diff,
       severityCounts,
       findings: {
-        vulnerabilities: job.vulnerabilityFindings.map((vuln) => ({ id: vuln.id, osvId: vuln.osvId, aliases: vuln.aliases, summary: vuln.summary, severity: vuln.severity, cvssScore: vuln.cvssScore, modifiedAt: vuln.modifiedAt, component: vuln.component })),
-        licenses: job.licenseFindings.map((finding) => ({ id: finding.id, observedExpression: finding.observedExpression, observationSource: finding.observationSource, decision: finding.decision, policyRule: finding.policyRule, reviewStatus: finding.reviewStatus, component: finding.component, reviews: finding.reviews })),
+        vulnerabilities: job.vulnerabilityFindings.map((vuln) => ({ id: vuln.id, osvId: vuln.osvId, aliases: vuln.aliases, summary: vuln.summary, severity: vuln.severity, cvssScore: vuln.cvssScore, modifiedAt: vuln.modifiedAt, component: vuln.component, impact: impactById.get(vuln.id) ?? null })),
+        licenses: job.licenseFindings.map((finding) => ({ id: finding.id, observedExpression: finding.observedExpression, observationSource: finding.observationSource, decision: finding.decision, policyRule: finding.policyRule, reviewStatus: finding.reviewStatus, component: finding.component, reviews: finding.reviews, impact: impactById.get(finding.id) ?? null })),
       },
+      evidence: {
+        sbomDigest: job.sbomDigest ?? null,
+        impact,
+      },
+    },
+  });
+});
+
+api.get("/scans/:jobId/impact", async (req, res) => {
+  const job = await loadReviewScan(req.params.jobId as string, req.auth!.workspaceId);
+  if (!job) return publicError(res, 404, "scan_not_found", "Scan not found.");
+  const edges = await prisma.dependencyEdge.findMany({ where: { scanJobId: job.id }, select: { parentComponentId: true, childComponentId: true } });
+  const impact = await computeScanImpact(job, edges, req.auth!.workspaceId);
+  const severityCounts = { critical: 0, high: 0, moderate: 0, low: 0, unknown: 0 };
+  for (const vuln of job.vulnerabilityFindings) {
+    const severity = (vuln.severity || "").toUpperCase();
+    if (severity === "CRITICAL") severityCounts.critical += 1;
+    else if (severity === "HIGH") severityCounts.high += 1;
+    else if (severity === "MODERATE" || severity === "MEDIUM") severityCounts.moderate += 1;
+    else if (severity === "LOW") severityCounts.low += 1;
+    else severityCounts.unknown += 1;
+  }
+  res.json({
+    item: {
+      scan: {
+        id: job.id,
+        project: job.project,
+        status: job.status.toLowerCase(),
+        stage: job.stage,
+        source: job.source,
+        uploadName: job.uploadName,
+        repositoryUrl: job.repositoryUrl,
+        branch: job.branch,
+        createdAt: job.createdAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        sbomDigest: job.sbomDigest ?? null,
+        counts: { components: job.componentCount, vulnerabilities: job.vulnerabilityCount, licenseReview: job.licenseReviewCount },
+      },
+      severityCounts,
+      impact,
     },
   });
 });
@@ -654,8 +788,11 @@ api.get("/projects/:projectId/components", async (req, res) => {
 });
 
 api.get("/licenses/findings", async (req, res) => {
-  const items = await prisma.licenseFinding.findMany({ where: { scanJob: { workspaceId: req.auth!.workspaceId } }, select: { id: true, observedExpression: true, observationSource: true, decision: true, policyRule: true, reviewStatus: true, component: { select: { id: true, name: true, version: true, purl: true, licenseExpression: true, licenseSource: true } }, scanJob: { select: { id: true, project: { select: { id: true, name: true } } } }, reviews: { orderBy: { createdAt: "desc" }, take: 1, select: { decision: true, note: true, createdAt: true } } }, orderBy: { scanJob: { createdAt: "desc" } } });
-  res.json({ items });
+  const [items, impact] = await Promise.all([
+    prisma.licenseFinding.findMany({ where: { scanJob: { workspaceId: req.auth!.workspaceId } }, select: { id: true, observedExpression: true, observationSource: true, decision: true, policyRule: true, reviewStatus: true, component: { select: { id: true, name: true, version: true, purl: true, licenseExpression: true, licenseSource: true } }, scanJob: { select: { id: true, project: { select: { id: true, name: true } } } }, reviews: { orderBy: { createdAt: "desc" }, take: 1, select: { decision: true, note: true, createdAt: true } } }, orderBy: { scanJob: { createdAt: "desc" } } }),
+    workspaceImpact(req.auth!.workspaceId),
+  ]);
+  res.json({ items: items.map((item) => ({ ...item, impact: impact.get(item.id) ?? null })) });
 });
 
 api.patch("/licenses/findings/:findingId/review", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
@@ -674,8 +811,11 @@ api.patch("/licenses/findings/:findingId/review", requireRole("OWNER", "ADMIN", 
 });
 
 api.get("/vulnerabilities/findings", async (req, res) => {
-  const items = await prisma.vulnerabilityFinding.findMany({ where: { scanJob: { workspaceId: req.auth!.workspaceId } }, select: { id: true, osvId: true, aliases: true, summary: true, severity: true, cvssScore: true, modifiedAt: true, affected: true, component: { select: { id: true, name: true, version: true, purl: true } }, scanJob: { select: { id: true, vulnerabilityCheckStatus: true, vulnerabilityCheckError: true, project: { select: { id: true, name: true } } } } }, orderBy: { scanJob: { createdAt: "desc" } } });
-  res.json({ items });
+  const [items, impact] = await Promise.all([
+    prisma.vulnerabilityFinding.findMany({ where: { scanJob: { workspaceId: req.auth!.workspaceId } }, select: { id: true, osvId: true, aliases: true, summary: true, severity: true, cvssScore: true, modifiedAt: true, affected: true, component: { select: { id: true, name: true, version: true, purl: true } }, scanJob: { select: { id: true, vulnerabilityCheckStatus: true, vulnerabilityCheckError: true, project: { select: { id: true, name: true } } } } }, orderBy: { scanJob: { createdAt: "desc" } } }),
+    workspaceImpact(req.auth!.workspaceId),
+  ]);
+  res.json({ items: items.map((item) => ({ ...item, impact: impact.get(item.id) ?? null })) });
 });
 
 api.get("/settings/license-policies", async (req, res) => {
@@ -714,35 +854,51 @@ api.get("/reports", async (req, res) => {
 });
 
 api.post("/reports", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
-  const schema = z.object({ scanJobId: z.string().min(1), format: z.enum(["cyclonedx-json", "licenses-csv", "vulnerabilities-csv"]) });
+  const schema = z.object({ scanJobId: z.string().min(1).max(64), format: z.enum(["cyclonedx-json", "licenses-csv", "vulnerabilities-csv", "release-evidence-json", "release-evidence-csv"]) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return publicError(res, 400, "invalid_report", "Choose a report format and completed scan.");
   const job = await prisma.scanJob.findFirst({ where: { id: parsed.data.scanJobId, workspaceId: req.auth!.workspaceId, status: "COMPLETED" }, include: { project: true } });
   if (!job) return publicError(res, 404, "scan_not_found", "Completed scan not found.");
   let content: string;
   let mimeType = "text/csv; charset=utf-8";
+  if (parsed.data.format === "release-evidence-json" || parsed.data.format === "release-evidence-csv") {
+    if (parsed.data.format === "release-evidence-json") {
+      const report = await buildReleaseEvidenceReport(job.id, req.auth!.workspaceId);
+      if (!report) return publicError(res, 409, "report_unavailable", "The completed scan could not be read for the report.");
+      content = JSON.stringify(report, null, 2);
+      mimeType = "application/json; charset=utf-8";
+    } else {
+      const csv = await buildReleaseEvidenceCsv(job.id, req.auth!.workspaceId);
+      if (!csv) return publicError(res, 409, "report_unavailable", "The completed scan could not be read for the report.");
+      content = csv;
+      mimeType = "text/csv; charset=utf-8";
+    }
+    const sbomDigest = job.sbomDigest ?? null;
+    const item = await prisma.report.create({ data: { workspaceId: req.auth!.workspaceId, scanJobId: job.id, name: releaseEvidenceReportName(job.project.name, parsed.data.format === "release-evidence-json" ? "json" : "csv", sbomDigest), format: mimeType, content } });
+    reportsGeneratedTotal.inc({ format: parsed.data.format }, 1);
+    return res.status(201).json({ item: { id: item.id, name: item.name, format: item.format, createdAt: item.createdAt } });
+  }
   if (parsed.data.format === "cyclonedx-json") {
     if (!job.sbom) return publicError(res, 409, "sbom_not_ready", "This scan has no generated SBOM.");
     content = JSON.stringify(job.sbom, null, 2);
     mimeType = "application/vnd.cyclonedx+json; version=1.6";
   } else if (parsed.data.format === "licenses-csv") {
     const rows = await prisma.licenseFinding.findMany({ where: { scanJobId: job.id }, include: { component: true } });
-    content = ["component,version,license,decision,reviewStatus", ...rows.map((row) => [row.component.name, row.component.version, row.observedExpression || "Unknown / needs review", row.decision, row.reviewStatus].map(csvEscape).join(","))].join("\n");
+    content = ["component,version,license,decision,reviewStatus", ...rows.map((row) => [row.component.name, row.component.version, row.observedExpression || "Unknown / needs review", row.decision, row.reviewStatus].map(csvCell).join(","))].join("\n") + "\n";
   } else {
     const rows = await prisma.vulnerabilityFinding.findMany({ where: { scanJobId: job.id }, include: { component: true } });
-    content = ["component,version,osvId,severity,summary", ...rows.map((row) => [row.component.name, row.component.version, row.osvId, row.severity || "Unknown", row.summary || ""].map(csvEscape).join(","))].join("\n");
+    content = ["component,version,osvId,severity,summary", ...rows.map((row) => [row.component.name, row.component.version, row.osvId, row.severity || "Unknown", row.summary || ""].map(csvCell).join(","))].join("\n") + "\n";
   }
   const name = `${job.project.name}-${parsed.data.format}`;
   const item = await prisma.report.create({ data: { workspaceId: req.auth!.workspaceId, scanJobId: job.id, name, format: mimeType, content } });
+  reportsGeneratedTotal.inc({ format: parsed.data.format }, 1);
   res.status(201).json({ item: { id: item.id, name: item.name, format: item.format, createdAt: item.createdAt } });
 });
-
-function csvEscape(value: string) { return `"${value.replace(/"/g, '""')}"`; }
 
 api.get("/reports/:reportId/download", async (req, res) => {
   const item = await prisma.report.findFirst({ where: { id: req.params.reportId, workspaceId: req.auth!.workspaceId } });
   if (!item) return publicError(res, 404, "report_not_found", "Report not found.");
-  const ext = item.format.includes("cyclonedx") ? "cdx.json" : "csv";
+  const ext = item.format.includes("cyclonedx") ? "cdx.json" : item.format.includes("json") ? "release-evidence.json" : "csv";
   res.setHeader("Content-Type", item.format);
   res.setHeader("Content-Disposition", `attachment; filename="${item.name.replace(/[^a-z0-9_-]+/gi, "-")}.${ext}"`);
   res.send(item.content);
@@ -798,11 +954,331 @@ api.get("/comparisons/:id/report", async (req, res) => {
   res.send(JSON.stringify(item.report, null, 2));
 });
 
+// Release evidence: manually registered links in the chain
+// source → build → SBOM → artifact → deploy. Workspace-scoped; the source
+// is always MANUAL and completeness is never invented.
+const evidenceSelect = {
+  id: true,
+  projectId: true,
+  scanJobId: true,
+  repositoryUrl: true,
+  commitSha: true,
+  sbomName: true,
+  sbomFormat: true,
+  sbomSerialNumber: true,
+  sbomGeneratedAt: true,
+  sbomDigest: true,
+  artifactName: true,
+  artifactDigest: true,
+  buildProvider: true,
+  buildWorkflow: true,
+  buildRunId: true,
+  buildRunUrl: true,
+  deployService: true,
+  deployEnvironment: true,
+  deployRegion: true,
+  deployAt: true,
+  evidenceSource: true,
+  verificationState: true,
+  note: true,
+  createdAt: true,
+  updatedAt: true,
+  createdBy: { select: { id: true, name: true, email: true } },
+  scanJob: { select: { id: true, status: true, stage: true, createdAt: true, repositoryUrl: true, branch: true, source: true } },
+  attestation: {
+    select: {
+      id: true,
+      envelope: true,
+      predicateType: true,
+      statementType: true,
+      payloadDigest: true,
+      rawBytes: true,
+      fileName: true,
+      subjectName: true,
+      subjectDigest: true,
+      subjectCount: true,
+      subjects: true,
+      subjectMatchesArtifact: true,
+      builderId: true,
+      buildType: true,
+      buildInvocationId: true,
+      startedOn: true,
+      finishedOn: true,
+      sourceRepoUrl: true,
+      sourceRevision: true,
+      materials: true,
+      signatureCount: true,
+      signatureState: true,
+      parsedAt: true,
+    },
+  },
+} as const;
+
+async function findEvidenceInWorkspace(id: string, workspaceId: string) {
+  return prisma.releaseEvidence.findFirst({ where: { id, workspaceId }, select: evidenceSelect });
+}
+
+function shapeEvidence(item: NonNullable<Awaited<ReturnType<typeof findEvidenceInWorkspace>>>) {
+  return {
+    ...item,
+    evidenceSource: item.evidenceSource.toLowerCase(),
+    verificationState: item.verificationState.toLowerCase(),
+    scan: item.scanJob ? { id: item.scanJob.id, status: item.scanJob.status.toLowerCase(), stage: item.scanJob.stage, createdAt: item.scanJob.createdAt, repositoryUrl: item.scanJob.repositoryUrl, branch: item.scanJob.branch, source: item.scanJob.source } : null,
+    scanJob: undefined,
+  };
+}
+
+api.get("/projects/:projectId/release-evidence", async (req, res) => {
+  const projectId = req.params.projectId as string;
+  const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId: req.auth!.workspaceId } });
+  if (!project) return publicError(res, 404, "project_not_found", "Project not found.");
+  const items = await prisma.releaseEvidence.findMany({ where: { workspaceId: req.auth!.workspaceId, projectId: project.id }, select: evidenceSelect, orderBy: { createdAt: "desc" } });
+  res.json({ items: items.map(shapeEvidence) });
+});
+
+api.post("/projects/:projectId/release-evidence", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
+  const projectId = req.params.projectId as string;
+  const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId: req.auth!.workspaceId } });
+  if (!project) return publicError(res, 404, "project_not_found", "Project not found.");
+  const parsed = releaseEvidenceCreateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return publicError(res, 400, "invalid_evidence", parsed.error.issues[0]?.message || "Check the evidence fields.");
+  if (parsed.data.scanJobId) {
+    const scan = await prisma.scanJob.findFirst({ where: { id: parsed.data.scanJobId, workspaceId: req.auth!.workspaceId, projectId: project.id }, select: { id: true } });
+    if (!scan) return publicError(res, 400, "invalid_evidence", "That scan does not belong to this project.");
+  }
+  const created = await prisma.releaseEvidence.create({ data: { ...parsed.data, workspaceId: req.auth!.workspaceId, projectId: project.id, createdById: req.auth!.userId, evidenceSource: "MANUAL" }, select: evidenceSelect });
+  res.status(201).json({ item: shapeEvidence(created) });
+});
+
+api.get("/release-evidence/:id", async (req, res) => {
+  const item = await findEvidenceInWorkspace(req.params.id as string, req.auth!.workspaceId);
+  if (!item) return publicError(res, 404, "evidence_not_found", "Release evidence not found.");
+  res.json({ item: shapeEvidence(item) });
+});
+
+api.patch("/release-evidence/:id", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
+  const id = req.params.id as string;
+  const existing = await prisma.releaseEvidence.findFirst({ where: { id, workspaceId: req.auth!.workspaceId }, select: { id: true, projectId: true } });
+  if (!existing) return publicError(res, 404, "evidence_not_found", "Release evidence not found.");
+  const parsed = releaseEvidenceUpdateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return publicError(res, 400, "invalid_evidence", parsed.error.issues[0]?.message || "Check the evidence fields.");
+  if (parsed.data.scanJobId) {
+    const scan = await prisma.scanJob.findFirst({ where: { id: parsed.data.scanJobId, workspaceId: req.auth!.workspaceId, projectId: existing.projectId }, select: { id: true } });
+    if (!scan) return publicError(res, 400, "invalid_evidence", "That scan does not belong to this project.");
+  }
+  const updated = await prisma.releaseEvidence.update({ where: { id }, data: parsed.data, select: evidenceSelect });
+  res.json({ item: shapeEvidence(updated) });
+});
+
+api.delete("/release-evidence/:id", requireRole("OWNER", "ADMIN"), async (req, res) => {
+  const id = req.params.id as string;
+  const existing = await prisma.releaseEvidence.findFirst({ where: { id, workspaceId: req.auth!.workspaceId }, select: { id: true } });
+  if (!existing) return publicError(res, 404, "evidence_not_found", "Release evidence not found.");
+  await prisma.releaseEvidence.delete({ where: { id } });
+  res.status(204).end();
+});
+
+// Provenance attestations: SAFE PARSING + DIGEST MATCHING ONLY.
+// DSSE/in-toto signatures are counted but never verified — no trust root is
+// configured. Every attestation's signatureState is "unverified" and the UI
+// says exactly that. Nothing here proves the artifact was built by anyone.
+const attestationSelect = {
+  id: true,
+  envelope: true,
+  predicateType: true,
+  statementType: true,
+  payloadDigest: true,
+  rawBytes: true,
+  fileName: true,
+  subjectName: true,
+  subjectDigest: true,
+  subjectCount: true,
+  subjects: true,
+  subjectMatchesArtifact: true,
+  builderId: true,
+  buildType: true,
+  buildInvocationId: true,
+  startedOn: true,
+  finishedOn: true,
+  sourceRepoUrl: true,
+  sourceRevision: true,
+  materials: true,
+  signatureCount: true,
+  signatureState: true,
+  parsedAt: true,
+} as const;
+
+api.post("/release-evidence/:id/attestation", requireRole("OWNER", "ADMIN", "ANALYST"), attestationUpload.single("file"), async (req, res) => {
+  const id = req.params.id as string;
+  const evidence = await prisma.releaseEvidence.findFirst({ where: { id, workspaceId: req.auth!.workspaceId }, select: { id: true, artifactDigest: true } });
+  if (!evidence) return publicError(res, 404, "evidence_not_found", "Release evidence not found.");
+  if (!req.file) return publicError(res, 400, "file_required", "Upload a SLSA provenance attestation (an in-toto Statement, optionally DSSE-wrapped).");
+  try {
+    const parsed = parseProvenance(req.file.buffer, evidence.artifactDigest);
+    const data = {
+      workspaceId: req.auth!.workspaceId,
+      envelope: parsed.envelope,
+      predicateType: parsed.predicateType,
+      statementType: parsed.statementType,
+      payloadDigest: parsed.payloadDigest,
+      rawBytes: parsed.rawBytes,
+      fileName: sanitizeFileName(req.file.originalname),
+      subjectName: parsed.subjectName,
+      subjectDigest: parsed.subjectDigest,
+      subjectCount: parsed.subjects.length,
+      subjects: parsed.subjects.map((subject) => ({ name: subject.name, digest: subject.digest })) as Prisma.InputJsonValue,
+      subjectMatchesArtifact: parsed.subjectMatchesArtifact,
+      builderId: parsed.builderId,
+      buildType: parsed.buildType,
+      buildInvocationId: parsed.buildInvocationId,
+      startedOn: parsed.startedOn ? new Date(parsed.startedOn) : null,
+      finishedOn: parsed.finishedOn ? new Date(parsed.finishedOn) : null,
+      sourceRepoUrl: parsed.sourceRepoUrl,
+      sourceRevision: parsed.sourceRevision,
+      materials: parsed.materials.map((material) => ({ uri: material.uri, digest: material.digest })) as Prisma.InputJsonValue,
+      signatureCount: parsed.signatureCount,
+      signatureState: "unverified",
+      createdById: req.auth!.userId,
+    };
+    const saved = await prisma.provenanceAttestation.upsert({
+      where: { evidenceId: id },
+      create: { ...data, evidenceId: id },
+      update: data,
+      select: attestationSelect,
+    });
+    res.status(201).json({ item: saved });
+  } catch (error) {
+    if (error instanceof ProvenanceError) return publicError(res, 400, error.code, error.message);
+    throw error;
+  }
+});
+
+api.get("/release-evidence/:id/attestation", async (req, res) => {
+  const id = req.params.id as string;
+  const item = await prisma.provenanceAttestation.findFirst({ where: { evidenceId: id, workspaceId: req.auth!.workspaceId }, select: attestationSelect });
+  if (!item) return publicError(res, 404, "attestation_not_found", "No provenance attestation is registered for this evidence.");
+  res.json({ item });
+});
+
+api.delete("/release-evidence/:id/attestation", requireRole("OWNER", "ADMIN"), async (req, res) => {
+  const id = req.params.id as string;
+  const existing = await prisma.provenanceAttestation.findFirst({ where: { evidenceId: id, workspaceId: req.auth!.workspaceId }, select: { id: true } });
+  if (!existing) return publicError(res, 404, "attestation_not_found", "No provenance attestation is registered for this evidence.");
+  await prisma.provenanceAttestation.delete({ where: { id: existing.id } });
+  res.status(204).end();
+});
+
+// Service level objectives: manual reliability context for registered services.
+// Source is always MANUAL; there is no live telemetry integration. errorBudget
+// is computed at read time from the stored values — never stored, never a score.
+const sloSelect = {
+  id: true,
+  projectId: true,
+  service: true,
+  environment: true,
+  name: true,
+  target: true,
+  indicatorName: true,
+  observedValue: true,
+  windowDays: true,
+  observedAt: true,
+  source: true,
+  note: true,
+  createdAt: true,
+  updatedAt: true,
+  createdBy: { select: { id: true, name: true, email: true } },
+} as const;
+
+type SloRow = Awaited<ReturnType<typeof findSloInWorkspace>>;
+
+async function findSloInWorkspace(id: string, workspaceId: string) {
+  return prisma.serviceLevelObjective.findFirst({ where: { id, workspaceId }, select: sloSelect });
+}
+
+function shapeSlo(item: NonNullable<SloRow>) {
+  return {
+    ...item,
+    source: item.source.toLowerCase(),
+    errorBudget: computeErrorBudget(item.target, item.observedValue),
+  };
+}
+
+api.get("/telemetry/status", async (_req, res) => {
+  res.json({ item: { ...TELEMETRY_STATUS } });
+});
+
+api.get("/projects/:projectId/slos", async (req, res) => {
+  const projectId = req.params.projectId as string;
+  const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId: req.auth!.workspaceId } });
+  if (!project) return publicError(res, 404, "project_not_found", "Project not found.");
+  const items = await prisma.serviceLevelObjective.findMany({ where: { workspaceId: req.auth!.workspaceId, projectId: project.id }, select: sloSelect, orderBy: [{ service: "asc" }, { environment: "asc" }, { name: "asc" }] });
+  res.json({ items: items.map(shapeSlo) });
+});
+
+api.post("/projects/:projectId/slos", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
+  const projectId = req.params.projectId as string;
+  const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId: req.auth!.workspaceId } });
+  if (!project) return publicError(res, 404, "project_not_found", "Project not found.");
+  const parsed = sloCreateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return publicError(res, 400, "invalid_slo", parsed.error.issues[0]?.message || "Check the SLO fields.");
+  const created = await prisma.serviceLevelObjective.create({ data: { ...parsed.data, workspaceId: req.auth!.workspaceId, projectId: project.id, createdById: req.auth!.userId, source: "MANUAL" }, select: sloSelect });
+  res.status(201).json({ item: shapeSlo(created) });
+});
+
+api.get("/slos/:id", async (req, res) => {
+  const item = await findSloInWorkspace(req.params.id as string, req.auth!.workspaceId);
+  if (!item) return publicError(res, 404, "slo_not_found", "SLO not found.");
+  res.json({ item: shapeSlo(item) });
+});
+
+api.patch("/slos/:id", requireRole("OWNER", "ADMIN", "ANALYST"), async (req, res) => {
+  const id = req.params.id as string;
+  const existing = await findSloInWorkspace(id, req.auth!.workspaceId);
+  if (!existing) return publicError(res, 404, "slo_not_found", "SLO not found.");
+  const parsed = sloUpdateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return publicError(res, 400, "invalid_slo", parsed.error.issues[0]?.message || "Check the SLO fields.");
+  const update = parsed.data;
+  // Merge stored + update, then validate the pair with the full rules.
+  const merged = {
+    service: update.service ?? existing.service,
+    environment: update.environment ?? existing.environment,
+    name: update.name ?? existing.name,
+    target: update.target ?? existing.target,
+    indicatorName: update.indicatorName ?? existing.indicatorName,
+    observedValue: update.observedValue === undefined ? existing.observedValue : update.observedValue,
+    windowDays: update.windowDays === undefined ? existing.windowDays : update.windowDays,
+    observedAt: update.observedAt === undefined
+      ? (existing.observedAt ? existing.observedAt.toISOString() : null)
+      : update.observedAt instanceof Date
+        ? update.observedAt.toISOString()
+        : update.observedAt,
+    source: "MANUAL",
+    note: update.note === undefined ? existing.note : update.note,
+  };
+  const validated = validateSloMerged(merged);
+  if (!validated.success) return publicError(res, 400, "invalid_slo", validated.error.issues[0]?.message || "Check the SLO fields.");
+  const updated = await prisma.serviceLevelObjective.update({ where: { id }, data: validated.data, select: sloSelect });
+  res.json({ item: shapeSlo(updated) });
+});
+
+api.delete("/slos/:id", requireRole("OWNER", "ADMIN"), async (req, res) => {
+  const id = req.params.id as string;
+  const existing = await prisma.serviceLevelObjective.findFirst({ where: { id, workspaceId: req.auth!.workspaceId }, select: { id: true } });
+  if (!existing) return publicError(res, 404, "slo_not_found", "SLO not found.");
+  await prisma.serviceLevelObjective.delete({ where: { id } });
+  res.status(204).end();
+});
+
 app.use("/api/v1", api);
-const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   void _next;
   if (error instanceof multer.MulterError) {
-    const message = error.code === "LIMIT_FILE_SIZE" ? "The file is too large. Maximum size is 20 MB." : "Choose one package-lock.json file.";
+    const isAttestation = typeof req?.path === "string" && req.path.includes("attestation");
+    const message = error.code === "LIMIT_FILE_SIZE"
+      ? isAttestation
+        ? "The attestation is too large. Maximum size is 2 MB."
+        : "The file is too large. Maximum size is 20 MB."
+      : "Choose one file to upload.";
     return publicError(res, 400, error.code.toLowerCase(), message);
   }
   if (error?.code === "P2002") return publicError(res, 409, "already_exists", "A record with those details already exists.");
@@ -811,8 +1287,11 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
 };
 app.use(errorHandler);
 
-await boss.start();
-await boss.createQueue("supplyguard-scan");
-app.listen(port, () => console.log(`SupplyGuard API listening on http://localhost:${port}/api/v1`));
+export { app };
+if (process.env.NODE_ENV !== "test") {
+  await boss.start();
+  await boss.createQueue("supplyguard-scan");
+  app.listen(port, () => console.log(`SupplyGuard API listening on http://localhost:${port}/api/v1`));
 
-process.on("SIGTERM", async () => { await boss.stop(); await prisma.$disconnect(); process.exit(0); });
+  process.on("SIGTERM", async () => { await boss.stop(); await prisma.$disconnect(); process.exit(0); });
+}

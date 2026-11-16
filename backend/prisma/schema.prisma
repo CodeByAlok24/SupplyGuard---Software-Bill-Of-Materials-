@@ -36,6 +36,9 @@ model User {
   resetTokenExpires DateTime?
   createdAt         DateTime  @default(now())
   memberships  WorkspaceMember[]
+  releaseEvidence ReleaseEvidence[]
+  serviceLevelObjectives ServiceLevelObjective[]
+  provenanceAttestations ProvenanceAttestation[]
   reviews      ReviewDecision[]
   githubConnection GitHubConnection?
   scans        ScanJob[]
@@ -64,6 +67,9 @@ model Workspace {
   policies  LicensePolicy[]
   scans     ScanJob[]
   reports   Report[]
+  releaseEvidence ReleaseEvidence[]
+  serviceLevelObjectives ServiceLevelObjective[]
+  provenanceAttestations ProvenanceAttestation[]
 }
 
 model WorkspaceMember {
@@ -91,6 +97,8 @@ model Project {
   scans         ScanJob[]
   sbomUploads   SbomUpload[]
   comparisons   SbomComparison[]
+  releaseEvidence ReleaseEvidence[]
+  serviceLevelObjectives ServiceLevelObjective[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId, updatedAt])
@@ -118,6 +126,7 @@ model ScanJob {
   licenseCheckStatus String @default("PENDING")
   licenseCheckError String?
   sbom        Json?
+  sbomDigest  String?
   startedAt   DateTime?
   completedAt DateTime?
   stage       String?
@@ -130,6 +139,7 @@ model ScanJob {
   licenseFindings LicenseFinding[]
   vulnerabilityFindings VulnerabilityFinding[]
   reports     Report[]
+  releaseEvidence ReleaseEvidence[]
 
   @@index([workspaceId, createdAt])
   @@index([projectId, createdAt])
@@ -276,4 +286,116 @@ model SbomComparison {
 
   @@index([workspaceId, createdAt])
   @@index([projectId, createdAt])
+}
+
+enum EvidenceSource {
+  MANUAL
+}
+
+enum VerificationState {
+  UNVERIFIED
+  USER_ASSERTED
+}
+
+model ReleaseEvidence {
+  id                 String            @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  scanJobId          String?
+  repositoryUrl      String?
+  commitSha          String?
+  sbomName           String?
+  sbomFormat         String?
+  sbomSerialNumber   String?
+  sbomGeneratedAt    DateTime?
+  sbomDigest         String?
+  artifactName       String?
+  artifactDigest     String?
+  buildProvider      String?
+  buildWorkflow      String?
+  buildRunId         String?
+  buildRunUrl        String?
+  deployService      String?
+  deployEnvironment  String?
+  deployRegion       String?
+  deployAt           DateTime?
+  evidenceSource     EvidenceSource    @default(MANUAL)
+  verificationState  VerificationState @default(UNVERIFIED)
+  note               String?
+  createdById        String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  workspace          Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project            Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scanJob            ScanJob?          @relation(fields: [scanJobId], references: [id], onDelete: SetNull)
+  attestation        ProvenanceAttestation?
+  createdBy          User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([scanJobId])
+}
+
+enum SloSource {
+  MANUAL
+}
+
+model ServiceLevelObjective {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  projectId      String
+  service        String
+  environment    String
+  name           String
+  target         Float
+  indicatorName  String
+  observedValue  Float?
+  windowDays     Int?
+  observedAt     DateTime?
+  source         SloSource @default(MANUAL)
+  note           String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy      User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, projectId, service, environment, name])
+  @@index([workspaceId, service, environment])
+  @@index([workspaceId, createdAt])
+}
+
+model ProvenanceAttestation {
+  id                    String   @id @default(cuid())
+  evidenceId            String   @unique
+  workspaceId           String
+  envelope              String   // "dsse" | "statement"
+  predicateType         String   // SLSA provenance type actually parsed
+  statementType         String   // in-toto Statement type
+  payloadDigest         String   // sha256 of the exact bytes received (audit trail)
+  rawBytes              Int
+  fileName              String?  // sanitized original filename, for display only
+  subjectName           String?
+  subjectDigest         String?  // "alg:hex" of the first subject
+  subjectCount          Int      @default(1)
+  subjects              Json?    // [{ name, digest }], validated hex
+  subjectMatchesArtifact Boolean? // null when the evidence has no artifact digest registered
+  builderId             String?
+  buildType             String?
+  buildInvocationId     String?
+  startedOn             DateTime?
+  finishedOn            DateTime?
+  sourceRepoUrl         String?
+  sourceRevision        String?
+  materials             Json?    // [{ uri, digest }], validated, max 50
+  signatureCount        Int      @default(0)
+  signatureState        String   @default("unverified") // ALWAYS unverified: signature verification is not implemented
+  parsedAt              DateTime @default(now())
+  createdById           String?
+  evidence              ReleaseEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  workspace             Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy             User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, parsedAt])
 }
